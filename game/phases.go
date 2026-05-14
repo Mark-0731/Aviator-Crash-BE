@@ -138,11 +138,13 @@ func (e *Engine) crashedPhase() {
 
 	// Update consecutive crashes counter
 	crashPoint := float64(round.CrashPointX100) / 100.0
+	e.mu.Lock()
 	if IsInstantCrash(crashPoint) {
 		e.consecutiveInstantCrashes++
 	} else {
 		e.consecutiveInstantCrashes = 0
 	}
+	e.mu.Unlock()
 
 	log.Info().
 		Str("round_id", round.RoundID).
@@ -155,7 +157,6 @@ func (e *Engine) crashedPhase() {
 	// Generate next round's server seed NOW (pre-commitment for chain verification)
 	nextServerSeed := uuid.New().String()
 	nextServerSeedHash := utils.SHA256Hash(nextServerSeed)
-
 	// Store next seed for the upcoming round
 	e.mu.Lock()
 	e.nextServerSeed = nextServerSeed
@@ -258,7 +259,6 @@ func (e *Engine) generateNewRound() *models.Round {
 		StartedAt:      time.Now(),
 	}
 }
-
 
 // buildCombinedClientSeed fetches all connected players' client seeds from DB
 // and combines them via SHA256 to form a single unpredictable client seed.
