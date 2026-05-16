@@ -65,6 +65,15 @@ func getAllIndexes() []indexDefinition {
 				{Keys: bson.D{{Key: "expires_at", Value: 1}}, Options: options.Index().SetExpireAfterSeconds(0)},
 			},
 		},
+		{
+			collection: "crypto_payments",
+			indexes: []mongo.IndexModel{
+				{Keys: bson.D{{Key: "payment_id", Value: 1}}, Options: options.Index().SetUnique(true)},
+				{Keys: bson.D{{Key: "order_id", Value: 1}}}, // Non-unique to allow null values in old records
+				{Keys: bson.D{{Key: "user_id", Value: 1}}},
+				{Keys: bson.D{{Key: "status", Value: 1}}},
+			},
+		},
 	}
 }
 

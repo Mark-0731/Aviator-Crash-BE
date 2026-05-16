@@ -31,7 +31,6 @@ type Round struct {
 	TotalPayoutCents          int64              `bson:"total_payout_cents" json:"total_payout_cents"`
 	PlayerCount               int                `bson:"player_count" json:"player_count"`
 	ConsecutiveInstantCrashes int                `bson:"consecutive_instant_crashes" json:"consecutive_instant_crashes"`
-	ForcedMinimum             bool               `bson:"forced_minimum" json:"forced_minimum"` // Minimum guarantee applied
 	StartedAt                 time.Time          `bson:"started_at" json:"started_at"`
 	CrashedAt                 *time.Time         `bson:"crashed_at,omitempty" json:"crashed_at,omitempty"`
 	TransitionTime            time.Time          `bson:"transition_time" json:"transition_time"` // For bet grace window
@@ -55,7 +54,6 @@ type RoundResponse struct {
 	HouseProfit       string      `json:"house_profit"`
 	HouseProfitCents  int64       `json:"house_profit_cents"`
 	PlayerCount       int         `json:"player_count"`
-	ForcedMinimum     bool        `json:"forced_minimum"`
 	StartedAt         time.Time   `json:"started_at"`
 	CrashedAt         *time.Time  `json:"crashed_at,omitempty"`
 }
@@ -80,7 +78,6 @@ func (r *Round) ToResponse() RoundResponse {
 		HouseProfit:       FormatCents(houseProfitCents),
 		HouseProfitCents:  houseProfitCents,
 		PlayerCount:       r.PlayerCount,
-		ForcedMinimum:     r.ForcedMinimum,
 		StartedAt:         r.StartedAt,
 		CrashedAt:         r.CrashedAt,
 	}

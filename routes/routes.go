@@ -81,12 +81,17 @@ func setupUserRoutes(api *gin.RouterGroup, ctrl *Controllers) {
 
 // setupWalletRoutes configures wallet routes
 func setupWalletRoutes(api *gin.RouterGroup, ctrl *Controllers) {
+	// Authenticated wallet routes
 	wallet := api.Group("/wallet")
 	wallet.Use(middleware.JWTAuth(), middleware.RateLimitREST())
 	{
 		wallet.POST("/deposit", ctrl.Wallet.Deposit)
+		wallet.GET("/deposit/:payment_id", ctrl.Wallet.GetDepositStatus) // Poll payment status
 		wallet.GET("/balance", ctrl.Wallet.GetBalance)
 	}
+
+	// NOWPayments IPN webhook — NO JWT auth, verified by HMAC-SHA512 signature
+	api.POST("/wallet/webhook/nowpayments", ctrl.Wallet.NOWPaymentsWebhook)
 }
 
 // setupGameRoutes configures game routes

@@ -39,6 +39,12 @@ type Config struct {
 	// Provably Fair
 	ServerSeedSecret string
 
+	// NOWPayments (Crypto Deposits)
+	NOWPaymentsAPIKey     string
+	NOWPaymentsIPNSecret  string
+	NOWPaymentsCallbackURL string
+	NOWPaymentsPayCurrency string // e.g. "usdttrc20"
+
 	// Security
 	BcryptCost            int
 	WSMaxMessageBytes     int64
@@ -84,6 +90,12 @@ func Load() error {
 
 		// Provably Fair
 		ServerSeedSecret: getEnv("SERVER_SEED_SECRET", "change-this-separate-32-char-minimum-hmac-secret-production"),
+
+		// NOWPayments
+		NOWPaymentsAPIKey:      getEnv("NOWPAYMENTS_API_KEY", ""),
+		NOWPaymentsIPNSecret:   getEnv("NOWPAYMENTS_IPN_SECRET", ""),
+		NOWPaymentsCallbackURL: getEnv("NOWPAYMENTS_CALLBACK_URL", "http://localhost:8080/api/wallet/webhook/nowpayments"),
+		NOWPaymentsPayCurrency: getEnv("NOWPAYMENTS_PAY_CURRENCY", "usdttrc20"),
 
 		// Security
 		BcryptCost:            getEnvAsInt("BCRYPT_COST", 12),

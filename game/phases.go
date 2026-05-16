@@ -41,7 +41,6 @@ func (e *Engine) waitingPhase() {
 		Str("round_id", round.RoundID).
 		Str("phase", string(models.RoundStatusWaiting)).
 		Float64("crash_point", float64(round.CrashPointX100)/100.0).
-		Bool("forced_minimum", round.ForcedMinimum).
 		Msg("round_started")
 
 	// Broadcast round start (NEVER reveal crash_point or server_seed)
