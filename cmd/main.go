@@ -40,6 +40,7 @@ func main() {
 	// Order matters: create hub first (with nil engine), then engine with hub, then set engine on hub
 	gameState := game.NewInMemoryGameState()
 	gameService := services.NewGameService()
+	gameService.SetGameState(gameState) // Set game state for atomic cashout validation
 	wsHub := websocket.NewHub(gameState, gameService)
 	gameEngine := game.NewEngine(gameState, wsHub)
 	wsHub.SetEngine(gameEngine)

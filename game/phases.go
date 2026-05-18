@@ -178,49 +178,33 @@ func (e *Engine) crashedPhase() {
 
 // runMultiplierLoop runs the multiplier growth loop
 func (e *Engine) runMultiplierLoop(crashPointX100 int64) {
+
 	lastBroadcastTime := time.Now()
 	minBroadcastInterval := 50 * time.Millisecond
-
 	for {
 		e.mu.RLock()
 		elapsed := time.Since(e.roundStartTime).Seconds()
 		e.mu.RUnlock()
-
-		// Calculate multiplier using exponential growth
-		// Formula: e^(0.00006 * elapsed_milliseconds)
 		multiplierFloat := math.Exp(0.00006 * elapsed * 1000)
 		multiplierX100 := int64(math.Floor(multiplierFloat * 100))
-
-		// Store current multiplier in game state for cashouts
-		e.state.SetCurrentMultiplier(multiplierFloat)
-
-		// Stop when we reach or exceed crash point
 		if multiplierX100 >= crashPointX100 {
-			break
+			// keep current multiplier below crash point
+			e.state.SetPhase(models.RoundStatusCrashed)
+			return
 		}
-
-		// Throttled broadcasting
+		e.state.SetCurrentMultiplier(float64(multiplierX100) / 100.0)
 		if time.Since(lastBroadcastTime) >= minBroadcastInterval {
 			e.hub.Broadcast("multiplier_update", map[string]interface{}{
 				"multiplier": float64(multiplierX100) / 100.0,
 			})
 			lastBroadcastTime = time.Now()
 		}
-
-		// Jittered tick interval
 		e.mu.RLock()
 		jitter := e.rng.Intn(config.AppConfig.MultiplierTickMaxMS - config.AppConfig.MultiplierTickMinMS)
 		e.mu.RUnlock()
-
 		time.Sleep(time.Duration(config.AppConfig.MultiplierTickMinMS+jitter) * time.Millisecond)
 	}
 
-	// Final broadcast at crash point
-	finalMultiplier := float64(crashPointX100) / 100.0
-	e.state.SetCurrentMultiplier(finalMultiplier)
-	e.hub.Broadcast("multiplier_update", map[string]interface{}{
-		"multiplier": finalMultiplier,
-	})
 }
 
 // generateNewRound creates a new round with provably fair parameters.

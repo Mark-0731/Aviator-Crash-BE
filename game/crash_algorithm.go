@@ -11,44 +11,77 @@ import (
 	"aviator-backend/utils"
 )
 
-// GenerateCrashPoint generates a provably fair crash point
-// Uses the same algorithm as Stake.com and BC.game (2^32 method)
+// GenerateCrashPoint generates a provably fair crash point.
+
 //
-// Algorithm:
-//  1. HMAC-SHA256(serverSeed, clientSeed) → 32-byte hash
-//  2. Read first 4 bytes as a big-endian uint32
-//  3. Apply house-edge formula: (2^32 / (uint32 + 1)) * (1 - houseEdge)
-//  4. Floor to 2 decimal places, minimum 1.00x
+
+// Model:
+
+//  1. HMAC-SHA256(serverSeed, clientSeed:nonce)
+
+//  2. About 1% of rounds instant-crash at 1.00x via divisibility pre-check
+
+//  3. Remaining rounds use raw = 2^32 / (h+1)
+
+//  4. Minimum non-instant result is 1.01x
+
+//  5. Result is truncated to 2 decimals
+
 //
-// This is cryptographically identical to Stake's Crash implementation.
+
+// Notes:
+
+// - This implementation is house-profitable, but not "exact 1% at every cashout target".
+
+// - 1.01x is intentionally close to break-even because only the 1.00x bucket loses there.
+
+// - Decimal truncation adds a small extra house edge.
 func GenerateCrashPoint(serverSeed, clientSeed string, nonce int64) float64 {
-	// Step 1: HMAC-SHA256(serverSeed, clientSeed:nonce)
-	// The nonce is appended to the client seed so each round is unique
 	message := fmt.Sprintf("%s:%d", clientSeed, nonce)
 	mac := hmac.New(sha256.New, []byte(serverSeed))
 	mac.Write([]byte(message))
 	hashBytes := mac.Sum(nil)
 
-	// Step 2: Read the first 4 bytes as a big-endian uint32
-	uint32Value := binary.BigEndian.Uint32(hashBytes[:4])
+	// House edge lives here — 1 in 100 rounds crash instantly
+	const instantCrashDivisor = 100
+	if isDivisible(hashBytes, instantCrashDivisor) {
+		return 1.00
+	}
 
-	// Step 3: Apply Stake/BC.game formula
-	// houseEdge = 0.01 (1%)
-	// result = (2^32 / (uint32 + 1)) * (1 - houseEdge)
-	const houseEdge = 0.01
-	const maxUint32 = float64(1 << 32) // 4294967296
-	rawCrashPoint := (maxUint32 / float64(uint32Value+1)) * (1 - houseEdge)
+	h := binary.BigEndian.Uint32(hashBytes[:4])
 
-	// Step 4: Clamp between 1.00 and 1,000,000x, floor to 2 decimal places
-	// No artificial 20x cap — large multipliers can happen just like Stake
-	crashPoint := math.Max(1.00, math.Min(rawCrashPoint, 1_000_000))
-	crashPoint = math.Floor(crashPoint*100) / 100
+	const maxUint32 = float64(1 << 32)
 
-	return crashPoint
+	// Primary house edge comes from the instant-crash pre-check.
+	// Decimal truncation adds a small additional edge.
+	raw := maxUint32 / float64(h+1)
+
+	// Formula path must never produce 1.00x (isDivisible owns that bucket)
+	crashPoint := math.Trunc(raw*100+1e-9) / 100
+
+	if crashPoint < 1.01 {
+
+		return 1.01
+
+	}
+	return math.Min(crashPoint, 1_000_000)
 }
 
-// GenerateHash generates the HMAC-SHA256 hash for verification
-// Message format matches Stake/BC.game: HMAC-SHA256(serverSeed, clientSeed:nonce)
+// isDivisible checks whether the hash (interpreted as a big-endian integer)
+// is divisible by divisor, computed incrementally to avoid big.Int overhead.
+func isDivisible(hash []byte, divisor int) bool {
+	if divisor <= 0 {
+		return false
+	}
+	remainder := 0
+	for _, b := range hash {
+		remainder = ((remainder << 8) + int(b)) % divisor
+	}
+	return remainder == 0
+}
+
+// GenerateHash returns the HMAC-SHA256 hash for a given round.
+// Players use this to independently verify crash points.
 func GenerateHash(serverSeed, clientSeed string, nonce int64) string {
 	message := fmt.Sprintf("%s:%d", clientSeed, nonce)
 	mac := hmac.New(sha256.New, []byte(serverSeed))
@@ -56,12 +89,12 @@ func GenerateHash(serverSeed, clientSeed string, nonce int64) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-// VerifyRound verifies the provably fair calculation
-// Returns true if all verification steps pass
+// VerifyRound verifies all provably fair steps for a completed round.
+// Returns true only if seed hash, HMAC, and crash point all match.
 func VerifyRound(serverSeed, serverSeedHash, clientSeed string, nonce int64, hash string, crashPoint float64) (bool, map[string]interface{}) {
 	steps := make(map[string]interface{})
 
-	// Step 1: Verify server seed hash (commitment)
+	// Step 1: Verify server seed commitment
 	calculatedSeedHash := utils.SHA256Hash(serverSeed)
 	seedHashMatch := calculatedSeedHash == serverSeedHash
 	steps["seed_hash_match"] = seedHashMatch
@@ -75,22 +108,20 @@ func VerifyRound(serverSeed, serverSeedHash, clientSeed string, nonce int64, has
 	steps["calculated_hash"] = calculatedHash
 	steps["provided_hash"] = hash
 
-	// Step 3: Verify crash point calculation
-	// Both values are floored to 2 decimals, so exact equality works
+	// Step 3: Verify crash point
 	calculatedCrashPoint := GenerateCrashPoint(serverSeed, clientSeed, nonce)
 	crashPointMatch := calculatedCrashPoint == crashPoint
 	steps["crash_point_match"] = crashPointMatch
 	steps["calculated_crash_point"] = calculatedCrashPoint
 	steps["provided_crash_point"] = crashPoint
 
-	// All steps must pass
 	valid := seedHashMatch && hmacMatch && crashPointMatch
 	steps["valid"] = valid
 
 	return valid, steps
 }
 
-// IsInstantCrash checks if a crash point is at 1.00x
+// IsInstantCrash reports whether a crash point is the minimum (1.00x).
 func IsInstantCrash(crashPoint float64) bool {
 	return crashPoint <= 1.00
 }

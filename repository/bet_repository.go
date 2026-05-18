@@ -64,8 +64,13 @@ func (r *BetRepository) FindAllPending(ctx context.Context) ([]models.Bet, error
 }
 
 func (r *BetRepository) UpdateCashout(ctx context.Context, betID primitive.ObjectID, multiplierX100 int64, profitCents int64) error {
-	return r.UpdateOne(ctx,
-		bson.D{{Key: "_id", Value: betID}},
+	// Conditional update: only update if status is still pending
+	// This provides DB-level protection against double cashout
+	result, err := r.collection.UpdateOne(ctx,
+		bson.D{
+			{Key: "_id", Value: betID},
+			{Key: "status", Value: models.BetStatusPending}, // ← Condition: only if still pending
+		},
 		bson.D{{Key: "$set", Value: bson.D{
 			{Key: "cashout_multiplier_x100", Value: multiplierX100},
 			{Key: "profit_cents", Value: profitCents},
@@ -73,6 +78,17 @@ func (r *BetRepository) UpdateCashout(ctx context.Context, betID primitive.Objec
 			{Key: "cashed_out_at", Value: time.Now()},
 		}}},
 	)
+
+	if err != nil {
+		return err
+	}
+
+	// If no document was matched, bet was already settled
+	if result.MatchedCount == 0 {
+		return mongo.ErrNoDocuments // Caller will interpret as ErrBetAlreadySettled
+	}
+
+	return nil
 }
 
 func (r *BetRepository) UpdateStatus(ctx context.Context, betID primitive.ObjectID, status models.BetStatus, profitCents int64) error {

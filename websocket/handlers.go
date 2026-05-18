@@ -6,6 +6,7 @@ import (
 
 	"aviator-backend/game"
 	"aviator-backend/models"
+	"aviator-backend/services"
 	"aviator-backend/utils"
 
 	"github.com/rs/zerolog/log"
@@ -88,10 +89,10 @@ func handlePlaceBet(client *Client, data map[string]any) {
 
 	bet, updatedUser, err := gameService.PlaceBet(ctx, userIDObj, currentRound.RoundID, amountCents)
 	if err != nil {
-		if err == utils.ErrDuplicateBetError {
+		if err == services.ErrDuplicateBet {
 			client.sendError("DUPLICATE_BET", "You already have a bet in this round")
-		} else if err.Error() == "insufficient balance" || err.Error() == "mongo: no documents in result" {
-			client.sendError("INSUFFICIENT_BALANCE", "Insufficient balance or account banned")
+		} else if err == services.ErrInsufficientBalance {
+			client.sendError("INSUFFICIENT_BALANCE", "Insufficient balance")
 		} else {
 			log.Error().Err(err).Str("user_id", client.userID).Msg("failed_to_place_bet")
 			client.sendError("INTERNAL_ERROR", "Failed to process bet")
@@ -118,8 +119,19 @@ func handlePlaceBet(client *Client, data map[string]any) {
 	})
 }
 
-// handleCashOut processes a cash out request using transactional GameService
+// handleCashOut processes a cash out request with minimal pre-checks
+// All authoritative validation happens inside GameService.CashOut transaction
+//
+// Race-condition-free design:
+// 1. Acquire per-user mutex (prevents duplicate cashout attempts)
+// 2. Call GameService.CashOut with just betID and userID
+// 3. GameService performs ALL validation atomically in transaction
+// 4. Map domain errors to user-friendly messages
+//
+// IMPORTANT: We do NOT read phase, round, bet, or multiplier here
+// All of that happens atomically inside the transaction
 func handleCashOut(client *Client, data map[string]any) {
+	// STEP 1: Acquire per-user mutex to prevent concurrent cashout attempts
 	userMutex := getUserMutex(client.userID)
 	userMutex.Lock()
 	defer userMutex.Unlock()
@@ -127,104 +139,89 @@ func handleCashOut(client *Client, data map[string]any) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	// STEP 2: Get bet ID from game state (minimal pre-check)
+	// We still need to know which bet to cash out
 	gameState := client.hub.gameState
 	if gameState == nil {
 		client.sendError("INTERNAL_ERROR", "Game state not available")
 		return
 	}
 
-	phase, err := gameState.GetPhase()
-	if err != nil || phase != models.RoundStatusRunning {
-		client.sendError("INVALID_PHASE", "Cash out only allowed during running phase")
-		return
-	}
-
-	currentRound, err := gameState.GetCurrentRound()
-	if err != nil {
-		client.sendError("INTERNAL_ERROR", "Failed to get current round")
-		return
-	}
-
 	bet, err := gameState.GetActiveBet(client.userID)
 	if err != nil {
-		client.sendError("VALIDATION_ERROR", "No active bet found")
+		client.sendError("NO_ACTIVE_BET", "No active bet found")
 		return
 	}
 
-	if bet.Status != models.BetStatusPending {
-		client.sendError("ALREADY_CASHED_OUT", "Bet already settled")
-		return
-	}
-
-	engine := client.hub.engine
-	if engine == nil {
-		client.sendError("INTERNAL_ERROR", "Game engine not available")
-		return
-	}
-
-	// Use the current multiplier from game state (not recalculated)
-	// This ensures the cashout uses the exact multiplier the user saw
-	multiplierFloat, err := gameState.GetCurrentMultiplier()
-	if err != nil || multiplierFloat < 1.0 {
-		client.sendError("INTERNAL_ERROR", "Failed to get current multiplier")
-		return
-	}
-
-	multiplierX100 := utils.MultiplierToX100(multiplierFloat)
-
-	payoutCents := utils.CalculatePayout(bet.AmountCents, multiplierX100)
-
-	cappedPayout, wasCapped := utils.ApplyMaxWinCap(payoutCents)
-	if wasCapped {
-		log.Info().
-			Str("user_id", client.userID).
-			Str("round_id", currentRound.RoundID).
-			Int64("original_payout", payoutCents).
-			Int64("capped_payout", cappedPayout).
-			Msg("max_win_cap_applied")
-		payoutCents = cappedPayout
-	}
-
-	profitCents := utils.CalculateProfit(bet.AmountCents, payoutCents)
-
-	userIDObj, _ := primitive.ObjectIDFromHex(client.userID)
-
-	// Use GameService for transactional cashout
-	// This atomically: updates bet, credits balance, records transaction
+	// STEP 3: Call GameService.CashOut - all validation happens here atomically
 	gameService := client.hub.gameService
 	if gameService == nil {
 		client.sendError("INTERNAL_ERROR", "Game service not available")
 		return
 	}
 
-	updatedUser, err := gameService.CashOut(ctx, bet.ID, userIDObj, multiplierX100, profitCents, payoutCents, currentRound.RoundID)
+	userIDObj, _ := primitive.ObjectIDFromHex(client.userID)
+
+	// This call does ALL validation atomically:
+	// - Verifies bet ownership and status
+	// - Verifies round is running
+	// - Reads authoritative multiplier
+	// - Enforces crash boundary
+	// - Calculates payout server-side
+	// - Applies max win cap
+	// - Updates bet, balance, and transaction atomically
+	updatedUser, result, err := gameService.CashOut(ctx, bet.ID, userIDObj)
+
+	// STEP 4: Handle domain-specific errors with user-friendly messages
 	if err != nil {
-		log.Error().Err(err).Msg("failed_to_cashout")
-		client.sendError("INTERNAL_ERROR", "Failed to process cash out")
+		switch err {
+		case services.ErrBetNotFound:
+			client.sendError("BET_NOT_FOUND", "Bet not found")
+		case services.ErrBetNotOwnedByUser:
+			client.sendError("UNAUTHORIZED", "Bet does not belong to you")
+		case services.ErrBetAlreadySettled:
+			client.sendError("ALREADY_SETTLED", "Bet already cashed out or lost")
+		case services.ErrRoundNotFound:
+			client.sendError("ROUND_NOT_FOUND", "Round not found")
+		case services.ErrRoundNotRunning:
+			client.sendError("INVALID_PHASE", "Cash out only allowed during running phase")
+		case services.ErrCashoutTooLate:
+			client.sendError("TOO_LATE", "Multiplier has reached crash point")
+		case services.ErrEngineStateUnavailable:
+			client.sendError("INTERNAL_ERROR", "Game engine state unavailable")
+		default:
+			log.Error().Err(err).Str("user_id", client.userID).Msg("cashout_failed")
+			client.sendError("INTERNAL_ERROR", "Failed to process cash out")
+		}
 		return
 	}
 
+	// STEP 5: Update local bet state (for broadcast purposes)
 	bet.Status = models.BetStatusWon
-	bet.CashoutMultiplierX100 = &multiplierX100
-	bet.ProfitCents = profitCents
+	bet.CashoutMultiplierX100 = &result.MultiplierX100
+	bet.ProfitCents = result.ProfitCents
 	cashedOutAt := time.Now()
 	bet.CashedOutAt = &cashedOutAt
 
-	logCashOut(client.userID, currentRound.RoundID, multiplierFloat, profitCents)
+	// STEP 6: Log successful cashout
+	logCashOut(client.userID, result.RoundID, result.Multiplier, result.ProfitCents)
 
+	// STEP 7: Send success response to user
 	client.SendMessage("cashout_confirmed", map[string]any{
-		"multiplier":    multiplierFloat,
-		"profit":        utils.FormatCents(profitCents),
-		"profit_cents":  profitCents,
-		"payout":        utils.FormatCents(payoutCents),
-		"payout_cents":  payoutCents,
+		"multiplier":    result.Multiplier,
+		"profit":        utils.FormatCents(result.ProfitCents),
+		"profit_cents":  result.ProfitCents,
+		"payout":        utils.FormatCents(result.PayoutCents),
+		"payout_cents":  result.PayoutCents,
 		"balance":       utils.FormatCents(updatedUser.BalanceCents),
 		"balance_cents": updatedUser.BalanceCents,
+		"was_capped":    result.WasCapped,
 	})
 
+	// STEP 8: Broadcast cashout to all players
 	client.hub.Broadcast("player_cashout", map[string]any{
 		"username":   client.username,
-		"multiplier": multiplierFloat,
-		"amount":     utils.FormatCents(payoutCents),
+		"multiplier": result.Multiplier,
+		"amount":     utils.FormatCents(result.PayoutCents),
 	})
 }
