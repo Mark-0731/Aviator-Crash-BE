@@ -29,7 +29,7 @@ func NewWalletController() *WalletController {
 // Body: { "amount": 50.0, "sandbox_case": "success" }
 func (ctrl *WalletController) Deposit(c *gin.Context) {
 	userIDStr := middleware.GetUserID(c)
-	userID, err := parseObjectID(userIDStr)
+	userID, err := parseUUID(userIDStr)
 	if err != nil {
 		log.Error().Err(err).Str("user_id", userIDStr).Msg("invalid_user_id")
 		utils.RespondWithError(c, utils.ErrBadRequest, "Invalid user ID")
@@ -48,7 +48,7 @@ func (ctrl *WalletController) Deposit(c *gin.Context) {
 
 	payment, err := ctrl.nowPaymentsService.CreateDeposit(c.Request.Context(), userID, req.Amount, req.SandboxCase)
 	if err != nil {
-		log.Error().Err(err).Str("user_id", userID.Hex()).Msg("create_deposit_failed")
+		log.Error().Err(err).Str("user_id", userID.String()).Msg("create_deposit_failed")
 		utils.RespondWithError(c, utils.ErrInternalError, err.Error())
 		return
 	}
@@ -66,7 +66,7 @@ func (ctrl *WalletController) Deposit(c *gin.Context) {
 // GET /api/wallet/deposit/:payment_id
 func (ctrl *WalletController) GetDepositStatus(c *gin.Context) {
 	userIDStr := middleware.GetUserID(c)
-	userID, err := parseObjectID(userIDStr)
+	userID, err := parseUUID(userIDStr)
 	if err != nil {
 		utils.RespondWithError(c, utils.ErrBadRequest, "Invalid user ID")
 		return
@@ -108,15 +108,20 @@ func (ctrl *WalletController) NOWPaymentsWebhook(c *gin.Context) {
 		return
 	}
 
-	// Verify HMAC-SHA512 signature from header
+	// Verify HMAC-SHA512 signature
 	sig := c.GetHeader("x-nowpayments-sig")
-	if sig == "" || !ctrl.nowPaymentsService.VerifyIPNSignature(rawBody, sig) {
-		// In sandbox mode without IPN secret configured, skip verification
-		if ctrl.nowPaymentsService.IsIPNSecretConfigured() {
+	ipnConfigured := ctrl.nowPaymentsService.IsIPNSecretConfigured()
+	sigValid := sig != "" && ctrl.nowPaymentsService.VerifyIPNSignature(rawBody, sig)
+
+	if !sigValid {
+		if ipnConfigured {
+			// Production: reject unsigned / tampered webhooks
 			log.Warn().Msg("webhook_signature_verification_failed")
 			c.Status(http.StatusUnauthorized)
 			return
 		}
+		// Sandbox without IPN secret: allow but log so it's visible in logs
+		log.Warn().Msg("webhook_signature_skipped_no_ipn_secret_configured")
 	}
 
 	// Parse the payload
@@ -139,7 +144,7 @@ func (ctrl *WalletController) NOWPaymentsWebhook(c *gin.Context) {
 // GetBalance gets user's current balance
 func (ctrl *WalletController) GetBalance(c *gin.Context) {
 	userIDStr := middleware.GetUserID(c)
-	userID, err := parseObjectID(userIDStr)
+	userID, err := parseUUID(userIDStr)
 	if err != nil {
 		utils.RespondWithError(c, utils.ErrBadRequest, "Invalid user ID")
 		return

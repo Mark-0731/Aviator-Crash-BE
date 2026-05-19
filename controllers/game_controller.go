@@ -90,7 +90,7 @@ func (ctrl *GameController) GetState(c *gin.Context) {
 func (ctrl *GameController) Health(c *gin.Context) {
 	// Check database connection
 	ctx := c.Request.Context()
-	err := database.Client.Ping(ctx, nil)
+	err := database.Pool.Ping(ctx)
 	dbStatus := "ok"
 	if err != nil {
 		dbStatus = "error"

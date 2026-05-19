@@ -3,7 +3,7 @@ package models
 import (
 	"time"
 
-	"go.mongodb.org/mongo-driver/bson/primitive"
+	"github.com/google/uuid"
 )
 
 // RoundStatus represents the state of a game round
@@ -18,22 +18,22 @@ const (
 
 // Round represents a single game round
 type Round struct {
-	ID                        primitive.ObjectID `bson:"_id,omitempty" json:"id"`
-	RoundID                   string             `bson:"round_id" json:"round_id"`                 // UUID v4
-	CrashPointX100            int64              `bson:"crash_point_x100" json:"crash_point_x100"` // NEVER sent before crash
-	ServerSeed                string             `bson:"server_seed" json:"server_seed"`           // NEVER sent before crash
-	ServerSeedHash            string             `bson:"server_seed_hash" json:"server_seed_hash"` // SHA256 commitment
-	ClientSeed                string             `bson:"client_seed" json:"client_seed"`
-	Nonce                     int64              `bson:"nonce" json:"nonce"`
-	Hash                      string             `bson:"hash" json:"hash"` // HMAC-SHA256 hex
-	Status                    RoundStatus        `bson:"status" json:"status"`
-	TotalWageredCents         int64              `bson:"total_wagered_cents" json:"total_wagered_cents"`
-	TotalPayoutCents          int64              `bson:"total_payout_cents" json:"total_payout_cents"`
-	PlayerCount               int                `bson:"player_count" json:"player_count"`
-	ConsecutiveInstantCrashes int                `bson:"consecutive_instant_crashes" json:"consecutive_instant_crashes"`
-	StartedAt                 time.Time          `bson:"started_at" json:"started_at"`
-	CrashedAt                 *time.Time         `bson:"crashed_at,omitempty" json:"crashed_at,omitempty"`
-	TransitionTime            time.Time          `bson:"transition_time" json:"transition_time"` // For bet grace window
+	ID                        uuid.UUID   `json:"id"`
+	RoundID                   string      `json:"round_id"`         // UUID v4
+	CrashPointX100            int64       `json:"crash_point_x100"` // NEVER sent before crash
+	ServerSeed                string      `json:"server_seed"`      // NEVER sent before crash
+	ServerSeedHash            string      `json:"server_seed_hash"` // SHA256 commitment
+	ClientSeed                string      `json:"client_seed"`
+	Nonce                     int64       `json:"nonce"`
+	Hash                      string      `json:"hash"` // HMAC-SHA256 hex
+	Status                    RoundStatus `json:"status"`
+	TotalWageredCents         int64       `json:"total_wagered_cents"`
+	TotalPayoutCents          int64       `json:"total_payout_cents"`
+	PlayerCount               int         `json:"player_count"`
+	ConsecutiveInstantCrashes int         `json:"consecutive_instant_crashes"`
+	StartedAt                 time.Time   `json:"started_at"`
+	CrashedAt                 *time.Time  `json:"crashed_at,omitempty"`
+	TransitionTime            time.Time   `json:"transition_time"` // For bet grace window
 }
 
 // RoundResponse is the API representation of a round
@@ -64,7 +64,7 @@ func (r *Round) ToResponse() RoundResponse {
 	houseProfitCents := calculateHouseProfit(r.TotalWageredCents, r.TotalPayoutCents)
 
 	resp := RoundResponse{
-		ID:                r.ID.Hex(),
+		ID:                r.ID.String(),
 		RoundID:           r.RoundID,
 		ServerSeedHash:    r.ServerSeedHash,
 		ClientSeed:        r.ClientSeed,

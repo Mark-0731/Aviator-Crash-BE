@@ -24,8 +24,8 @@ const (
 	// Send pings to peer with this period (must be less than PongWait)
 	PingPeriod = 50 * time.Second
 
-	// Maximum message size allowed from peer
-	MaxMessageSize = 512
+	// Maximum message size allowed from peer (4 KB — sufficient for all client messages)
+	MaxMessageSize = 4096
 )
 
 // Client represents a WebSocket client connection

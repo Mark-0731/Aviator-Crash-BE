@@ -2,24 +2,22 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"time"
 
-	"aviator-backend/database"
 	"aviator-backend/models"
 
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 type AuthRepository struct {
-	refreshTokens *BaseRepository
-	wsTickets     *BaseRepository
+	*BaseRepository
 }
 
 func NewAuthRepository() *AuthRepository {
 	return &AuthRepository{
-		refreshTokens: newBase(database.DB.Collection("refresh_tokens")),
-		wsTickets:     newBase(database.DB.Collection("ws_tickets")),
+		BaseRepository: newBase("refresh_tokens"),
 	}
 }
 
@@ -27,58 +25,104 @@ func NewAuthRepository() *AuthRepository {
 
 func (r *AuthRepository) CreateRefreshToken(ctx context.Context, token *models.RefreshToken) error {
 	token.CreatedAt = time.Now()
-	id, err := r.refreshTokens.InsertOne(ctx, token)
-	if err != nil {
-		return err
-	}
-	token.ID = id
-	return nil
+
+	query := `
+		INSERT INTO refresh_tokens (token, user_id, expires_at, created_at)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id`
+
+	err := r.getTx(ctx).QueryRow(ctx, query,
+		token.Token, token.UserID, token.ExpiresAt, token.CreatedAt,
+	).Scan(&token.ID)
+
+	return err
 }
 
 func (r *AuthRepository) FindRefreshToken(ctx context.Context, tokenString string) (*models.RefreshToken, error) {
+	query := `SELECT id, token, user_id, expires_at, created_at FROM refresh_tokens WHERE token = $1`
+
 	var token models.RefreshToken
-	err := r.refreshTokens.FindOne(ctx, bson.D{{Key: "token", Value: tokenString}}, &token)
-	return &token, err
+	err := r.getTx(ctx).QueryRow(ctx, query, tokenString).Scan(
+		&token.ID, &token.Token, &token.UserID, &token.ExpiresAt, &token.CreatedAt,
+	)
+
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, errors.New("refresh token not found")
+		}
+		return nil, err
+	}
+
+	return &token, nil
 }
 
 func (r *AuthRepository) DeleteRefreshToken(ctx context.Context, tokenString string) error {
-	return r.refreshTokens.DeleteOne(ctx, bson.D{{Key: "token", Value: tokenString}})
+	query := `DELETE FROM refresh_tokens WHERE token = $1`
+	_, err := r.getTx(ctx).Exec(ctx, query, tokenString)
+	return err
 }
 
-func (r *AuthRepository) DeleteUserRefreshTokens(ctx context.Context, userID primitive.ObjectID) error {
-	_, err := r.refreshTokens.DeleteMany(ctx, bson.D{{Key: "user_id", Value: userID}})
+func (r *AuthRepository) DeleteUserRefreshTokens(ctx context.Context, userID uuid.UUID) error {
+	query := `DELETE FROM refresh_tokens WHERE user_id = $1`
+	_, err := r.getTx(ctx).Exec(ctx, query, userID)
 	return err
 }
 
 func (r *AuthRepository) DeleteExpiredRefreshTokens(ctx context.Context) (int64, error) {
-	return r.refreshTokens.DeleteExpired(ctx)
+	query := `DELETE FROM refresh_tokens WHERE expires_at < $1`
+	result, err := r.getTx(ctx).Exec(ctx, query, time.Now())
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 // WebSocket Ticket Operations
 
 func (r *AuthRepository) CreateWSTicket(ctx context.Context, ticket *models.WSTicket) error {
 	ticket.CreatedAt = time.Now()
-	id, err := r.wsTickets.InsertOne(ctx, ticket)
-	if err != nil {
-		return err
-	}
-	ticket.ID = id
-	return nil
+
+	query := `
+		INSERT INTO ws_tickets (ticket, user_id, used, expires_at, created_at)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING id`
+
+	err := r.getTx(ctx).QueryRow(ctx, query,
+		ticket.Ticket, ticket.UserID, ticket.Used, ticket.ExpiresAt, ticket.CreatedAt,
+	).Scan(&ticket.ID)
+
+	return err
 }
 
 func (r *AuthRepository) FindWSTicket(ctx context.Context, ticketString string) (*models.WSTicket, error) {
+	query := `SELECT id, ticket, user_id, used, expires_at, created_at FROM ws_tickets WHERE ticket = $1`
+
 	var ticket models.WSTicket
-	err := r.wsTickets.FindOne(ctx, bson.D{{Key: "ticket", Value: ticketString}}, &ticket)
-	return &ticket, err
+	err := r.getTx(ctx).QueryRow(ctx, query, ticketString).Scan(
+		&ticket.ID, &ticket.Ticket, &ticket.UserID, &ticket.Used, &ticket.ExpiresAt, &ticket.CreatedAt,
+	)
+
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, errors.New("ws ticket not found")
+		}
+		return nil, err
+	}
+
+	return &ticket, nil
 }
 
 func (r *AuthRepository) MarkWSTicketUsed(ctx context.Context, ticketString string) error {
-	return r.wsTickets.UpdateOne(ctx,
-		bson.D{{Key: "ticket", Value: ticketString}},
-		bson.D{{Key: "$set", Value: bson.D{{Key: "used", Value: true}}}},
-	)
+	query := `UPDATE ws_tickets SET used = true WHERE ticket = $1`
+	_, err := r.getTx(ctx).Exec(ctx, query, ticketString)
+	return err
 }
 
 func (r *AuthRepository) DeleteExpiredWSTickets(ctx context.Context) (int64, error) {
-	return r.wsTickets.DeleteExpired(ctx)
+	query := `DELETE FROM ws_tickets WHERE expires_at < $1`
+	result, err := r.getTx(ctx).Exec(ctx, query, time.Now())
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

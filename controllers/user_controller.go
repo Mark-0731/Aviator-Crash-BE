@@ -2,7 +2,6 @@ package controllers
 
 import (
 	"aviator-backend/middleware"
-	"aviator-backend/repository"
 	"aviator-backend/services"
 	"aviator-backend/utils"
 
@@ -13,26 +12,23 @@ import (
 
 type UserController struct {
 	gameService *services.GameService
-	userRepo    *repository.UserRepository
 }
 
 func NewUserController() *UserController {
 	return &UserController{
 		gameService: services.NewGameService(),
-		userRepo:    repository.NewUserRepository(),
 	}
 }
 
 // GetProfile gets user profile
 func (ctrl *UserController) GetProfile(c *gin.Context) {
-	userIDStr := middleware.GetUserID(c)
-	userID, err := parseObjectID(userIDStr)
+	userID, err := parseUUID(middleware.GetUserID(c))
 	if err != nil {
 		utils.RespondWithError(c, utils.ErrBadRequest, "Invalid user ID")
 		return
 	}
 
-	user, err := ctrl.userRepo.FindByID(c.Request.Context(), userID)
+	user, err := ctrl.gameService.GetUserProfile(c.Request.Context(), userID)
 	if err != nil {
 		utils.RespondWithError(c, utils.ErrNotFound, "User not found")
 		return
@@ -43,15 +39,13 @@ func (ctrl *UserController) GetProfile(c *gin.Context) {
 
 // GetBets gets user's bet history
 func (ctrl *UserController) GetBets(c *gin.Context) {
-	userIDStr := middleware.GetUserID(c)
-	userID, err := parseObjectID(userIDStr)
+	userID, err := parseUUID(middleware.GetUserID(c))
 	if err != nil {
 		utils.RespondWithError(c, utils.ErrBadRequest, "Invalid user ID")
 		return
 	}
 
 	page, limit := parsePagination(c, 10)
-
 	bets, total, err := ctrl.gameService.GetUserBets(c.Request.Context(), userID, page, limit)
 	if err != nil {
 		utils.RespondWithError(c, utils.ErrInternalError, "Failed to fetch bets")
@@ -63,15 +57,13 @@ func (ctrl *UserController) GetBets(c *gin.Context) {
 
 // GetTransactions gets user's transaction history
 func (ctrl *UserController) GetTransactions(c *gin.Context) {
-	userIDStr := middleware.GetUserID(c)
-	userID, err := parseObjectID(userIDStr)
+	userID, err := parseUUID(middleware.GetUserID(c))
 	if err != nil {
 		utils.RespondWithError(c, utils.ErrBadRequest, "Invalid user ID")
 		return
 	}
 
 	page, limit := parsePagination(c, 10)
-
 	transactions, total, err := ctrl.gameService.GetUserTransactions(c.Request.Context(), userID, page, limit)
 	if err != nil {
 		utils.RespondWithError(c, utils.ErrInternalError, "Failed to fetch transactions")
@@ -85,10 +77,8 @@ func (ctrl *UserController) GetTransactions(c *gin.Context) {
 }
 
 // SetClientSeed lets a player set their own client seed for provably fair play
-// This seed will be combined with other players' seeds when generating the next round
 func (ctrl *UserController) SetClientSeed(c *gin.Context) {
-	userIDStr := middleware.GetUserID(c)
-	userID, err := parseObjectID(userIDStr)
+	userID, err := parseUUID(middleware.GetUserID(c))
 	if err != nil {
 		utils.RespondWithError(c, utils.ErrBadRequest, "Invalid user ID")
 		return
@@ -102,7 +92,7 @@ func (ctrl *UserController) SetClientSeed(c *gin.Context) {
 		return
 	}
 
-	if err := ctrl.userRepo.UpdateClientSeed(c.Request.Context(), userID, req.ClientSeed); err != nil {
+	if err := ctrl.gameService.UpdateClientSeed(c.Request.Context(), userID, req.ClientSeed); err != nil {
 		utils.RespondWithError(c, utils.ErrInternalError, "Failed to update client seed")
 		return
 	}

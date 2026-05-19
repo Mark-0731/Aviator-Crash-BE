@@ -31,10 +31,11 @@ func main() {
 	}
 
 	// Connect to database
-	if err := database.Connect(); err != nil {
+	ctx := context.Background()
+	if err := database.ConnectCockroachDB(ctx); err != nil {
 		log.Fatal().Err(err).Msg("failed_to_connect_database")
 	}
-	defer database.Disconnect()
+	defer database.DisconnectCockroachDB()
 
 	// Initialize game components
 	// Order matters: create hub first (with nil engine), then engine with hub, then set engine on hub

@@ -2,119 +2,166 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"time"
 
-	"aviator-backend/database"
 	"aviator-backend/models"
 
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
-	"go.mongodb.org/mongo-driver/mongo"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
-// PaymentRepository handles all DB operations for CryptoPayment
 type PaymentRepository struct {
 	*BaseRepository
 }
 
 func NewPaymentRepository() *PaymentRepository {
-	collection := database.DB.Collection("crypto_payments")
 	return &PaymentRepository{
-		BaseRepository: newBase(collection),
+		BaseRepository: newBase("payments"),
 	}
 }
 
-// Create inserts a new CryptoPayment document
 func (r *PaymentRepository) Create(ctx context.Context, payment *models.CryptoPayment) error {
 	payment.CreatedAt = time.Now()
 	payment.UpdatedAt = time.Now()
-	id, err := r.InsertOne(ctx, payment)
-	if err != nil {
-		return err
-	}
-	payment.ID = id
-	return nil
+
+	query := `
+		INSERT INTO payments (user_id, payment_id, order_id, payment_status, pay_address, price_amount, price_currency, 
+		                      pay_amount, pay_currency, amount_received, purchase_amount_cents, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		RETURNING id`
+
+	err := r.getTx(ctx).QueryRow(ctx, query,
+		payment.UserID, payment.PaymentID, payment.OrderID, payment.Status, payment.PayAddress,
+		payment.PriceAmountUSD, "USD", payment.PayAmount, payment.PayCurrency, payment.ActuallyPaid,
+		payment.CreditedCents, payment.CreatedAt, payment.UpdatedAt,
+	).Scan(&payment.ID)
+
+	return err
 }
 
-// FindByPaymentID finds a payment by its NOWPayments payment_id
 func (r *PaymentRepository) FindByPaymentID(ctx context.Context, paymentID string) (*models.CryptoPayment, error) {
+	query := `
+		SELECT id, user_id, payment_id, order_id, payment_status, pay_address, price_amount, price_currency,
+		       pay_amount, pay_currency, amount_received, purchase_amount_cents, created_at, updated_at
+		FROM payments WHERE payment_id = $1`
+
 	var payment models.CryptoPayment
-	err := r.FindOne(ctx, bson.D{{Key: "payment_id", Value: paymentID}}, &payment)
+	var priceCurrency string // DB column exists but not on model; scanned and discarded
+
+	err := r.getTx(ctx).QueryRow(ctx, query, paymentID).Scan(
+		&payment.ID, &payment.UserID, &payment.PaymentID, &payment.OrderID, &payment.Status, &payment.PayAddress,
+		&payment.PriceAmountUSD, &priceCurrency, &payment.PayAmount, &payment.PayCurrency, &payment.ActuallyPaid,
+		&payment.CreditedCents, &payment.CreatedAt, &payment.UpdatedAt,
+	)
+	_ = priceCurrency // intentionally discarded — not on CryptoPayment model
+
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, errors.New("payment not found")
+		}
 		return nil, err
 	}
+
 	return &payment, nil
 }
 
-// FindByOrderID finds a payment by its unique order_id (used in webhooks)
 func (r *PaymentRepository) FindByOrderID(ctx context.Context, orderID string) (*models.CryptoPayment, error) {
+	query := `
+		SELECT id, user_id, payment_id, order_id, payment_status, pay_address, price_amount, price_currency,
+		       pay_amount, pay_currency, amount_received, purchase_amount_cents, created_at, updated_at
+		FROM payments WHERE order_id = $1`
+
 	var payment models.CryptoPayment
-	err := r.FindOne(ctx, bson.D{{Key: "order_id", Value: orderID}}, &payment)
+	var priceCurrency string // DB column exists but not on model; scanned and discarded
+
+	err := r.getTx(ctx).QueryRow(ctx, query, orderID).Scan(
+		&payment.ID, &payment.UserID, &payment.PaymentID, &payment.OrderID, &payment.Status, &payment.PayAddress,
+		&payment.PriceAmountUSD, &priceCurrency, &payment.PayAmount, &payment.PayCurrency, &payment.ActuallyPaid,
+		&payment.CreditedCents, &payment.CreatedAt, &payment.UpdatedAt,
+	)
+	_ = priceCurrency // intentionally discarded — not on CryptoPayment model
+
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, errors.New("payment not found")
+		}
 		return nil, err
 	}
+
 	return &payment, nil
 }
 
-// FindByPaymentIDAndUser finds a payment by payment_id scoped to a specific user (prevents leaking other users' payments)
-func (r *PaymentRepository) FindByPaymentIDAndUser(ctx context.Context, paymentID string, userID primitive.ObjectID) (*models.CryptoPayment, error) {
+func (r *PaymentRepository) FindByPaymentIDAndUser(ctx context.Context, paymentID string, userID uuid.UUID) (*models.CryptoPayment, error) {
+	query := `
+		SELECT id, user_id, payment_id, order_id, payment_status, pay_address, price_amount, price_currency,
+		       pay_amount, pay_currency, amount_received, purchase_amount_cents, created_at, updated_at
+		FROM payments WHERE payment_id = $1 AND user_id = $2`
+
 	var payment models.CryptoPayment
-	err := r.FindOne(ctx, bson.D{
-		{Key: "payment_id", Value: paymentID},
-		{Key: "user_id", Value: userID},
-	}, &payment)
+	var priceCurrency string // DB column exists but not on model; scanned and discarded
+
+	err := r.getTx(ctx).QueryRow(ctx, query, paymentID, userID).Scan(
+		&payment.ID, &payment.UserID, &payment.PaymentID, &payment.OrderID, &payment.Status, &payment.PayAddress,
+		&payment.PriceAmountUSD, &priceCurrency, &payment.PayAmount, &payment.PayCurrency, &payment.ActuallyPaid,
+		&payment.CreditedCents, &payment.CreatedAt, &payment.UpdatedAt,
+	)
+	_ = priceCurrency // intentionally discarded — not on CryptoPayment model
+
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, errors.New("payment not found")
+		}
 		return nil, err
 	}
+
 	return &payment, nil
 }
 
-// UpdateStatus updates a payment's status, actually_paid, and credited_cents atomically
 func (r *PaymentRepository) UpdateStatus(ctx context.Context, paymentID string, status models.PaymentStatus, actuallyPaid float64, creditedCents int64) error {
-	return r.UpdateOne(ctx,
-		bson.D{{Key: "payment_id", Value: paymentID}},
-		bson.D{{Key: "$set", Value: bson.D{
-			{Key: "status", Value: status},
-			{Key: "actually_paid", Value: actuallyPaid},
-			{Key: "credited_cents", Value: creditedCents},
-			{Key: "updated_at", Value: time.Now()},
-		}}},
-	)
+	query := `
+		UPDATE payments 
+		SET payment_status = $1, amount_received = $2, purchase_amount_cents = $3, updated_at = $4
+		WHERE payment_id = $5`
+
+	_, err := r.getTx(ctx).Exec(ctx, query, status, actuallyPaid, creditedCents, time.Now(), paymentID)
+	return err
 }
 
-// UpdateStatusByOrderID updates a payment's status by order_id (used in webhooks)
 func (r *PaymentRepository) UpdateStatusByOrderID(ctx context.Context, orderID string, status models.PaymentStatus, actuallyPaid float64, creditedCents int64) error {
-	return r.UpdateOne(ctx,
-		bson.D{{Key: "order_id", Value: orderID}},
-		bson.D{{Key: "$set", Value: bson.D{
-			{Key: "status", Value: status},
-			{Key: "actually_paid", Value: actuallyPaid},
-			{Key: "credited_cents", Value: creditedCents},
-			{Key: "updated_at", Value: time.Now()},
-		}}},
-	)
+	query := `
+		UPDATE payments 
+		SET payment_status = $1, amount_received = $2, purchase_amount_cents = $3, updated_at = $4
+		WHERE order_id = $5`
+
+	_, err := r.getTx(ctx).Exec(ctx, query, status, actuallyPaid, creditedCents, time.Now(), orderID)
+	return err
 }
 
-// IsAlreadyFinished returns true if the payment has already been credited (idempotency guard)
+// IsAlreadyFinished checks if a payment is in a terminal finished state.
+// Uses a direct COUNT query to avoid fragile error-string matching.
 func (r *PaymentRepository) IsAlreadyFinished(ctx context.Context, paymentID string) (bool, error) {
-	payment, err := r.FindByPaymentID(ctx, paymentID)
-	if err == mongo.ErrNoDocuments {
-		return false, nil
-	}
+	var count int
+	err := r.getTx(ctx).QueryRow(ctx,
+		`SELECT COUNT(*) FROM payments WHERE payment_id = $1 AND payment_status = $2`,
+		paymentID, models.PaymentStatusFinished,
+	).Scan(&count)
 	if err != nil {
 		return false, err
 	}
-	return payment.Status == models.PaymentStatusFinished, nil
+	return count > 0, nil
 }
 
-// IsAlreadyFinishedByOrderID returns true if the payment has already been credited by order_id
+// IsAlreadyFinishedByOrderID checks if a payment identified by order_id is already finished.
+// Uses a direct COUNT query to avoid fragile error-string matching.
 func (r *PaymentRepository) IsAlreadyFinishedByOrderID(ctx context.Context, orderID string) (bool, error) {
-	payment, err := r.FindByOrderID(ctx, orderID)
-	if err == mongo.ErrNoDocuments {
-		return false, nil
-	}
+	var count int
+	err := r.getTx(ctx).QueryRow(ctx,
+		`SELECT COUNT(*) FROM payments WHERE order_id = $1 AND payment_status = $2`,
+		orderID, models.PaymentStatusFinished,
+	).Scan(&count)
 	if err != nil {
 		return false, err
 	}
-	return payment.Status == models.PaymentStatusFinished, nil
+	return count > 0, nil
 }

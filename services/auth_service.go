@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"errors"
+	"fmt"
 	"regexp"
 	"time"
 
@@ -12,8 +13,6 @@ import (
 	"aviator-backend/utils"
 
 	"github.com/google/uuid"
-	"go.mongodb.org/mongo-driver/bson/primitive"
-	"go.mongodb.org/mongo-driver/mongo"
 )
 
 // FULLY FUNCTIONAL - NO PLACEHOLDERS
@@ -99,13 +98,15 @@ func (s *AuthService) Register(ctx context.Context, username, email, password, i
 		return nil, "", "", err
 	}
 
-	// Store refresh token using repository
+	// Store refresh token
 	refreshToken := &models.RefreshToken{
 		Token:     refreshTokenString,
 		UserID:    user.ID,
 		ExpiresAt: time.Now().Add(time.Duration(config.AppConfig.JWTRefreshExpiryDays) * 24 * time.Hour),
 	}
-	s.authRepo.CreateRefreshToken(ctx, refreshToken)
+	if err := s.authRepo.CreateRefreshToken(ctx, refreshToken); err != nil {
+		return nil, "", "", fmt.Errorf("store refresh token: %w", err)
+	}
 
 	return user, accessToken, refreshTokenString, nil
 }
@@ -115,7 +116,7 @@ func (s *AuthService) Login(ctx context.Context, email, password, ip string) (*m
 	// Find user by email using repository
 	user, err := s.userRepo.FindByEmail(ctx, email)
 	if err != nil {
-		if err == mongo.ErrNoDocuments {
+		if err.Error() == "user not found" {
 			return nil, "", "", errors.New("invalid email or password")
 		}
 		return nil, "", "", err
@@ -145,13 +146,15 @@ func (s *AuthService) Login(ctx context.Context, email, password, ip string) (*m
 		return nil, "", "", err
 	}
 
-	// Store refresh token using repository
+	// Store refresh token
 	refreshToken := &models.RefreshToken{
 		Token:     refreshTokenString,
 		UserID:    user.ID,
 		ExpiresAt: time.Now().Add(time.Duration(config.AppConfig.JWTRefreshExpiryDays) * 24 * time.Hour),
 	}
-	s.authRepo.CreateRefreshToken(ctx, refreshToken)
+	if err := s.authRepo.CreateRefreshToken(ctx, refreshToken); err != nil {
+		return nil, "", "", fmt.Errorf("store refresh token: %w", err)
+	}
 
 	return user, accessToken, refreshTokenString, nil
 }
@@ -197,7 +200,7 @@ func (s *AuthService) Logout(ctx context.Context, refreshTokenString string) err
 }
 
 // CreateWSTicket creates a one-time WebSocket authentication ticket
-func (s *AuthService) CreateWSTicket(ctx context.Context, userID primitive.ObjectID) (string, error) {
+func (s *AuthService) CreateWSTicket(ctx context.Context, userID uuid.UUID) (string, error) {
 	ticketString := uuid.New().String()
 
 	ticket := &models.WSTicket{

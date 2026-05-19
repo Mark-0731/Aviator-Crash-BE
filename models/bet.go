@@ -3,7 +3,7 @@ package models
 import (
 	"time"
 
-	"go.mongodb.org/mongo-driver/bson/primitive"
+	"github.com/google/uuid"
 )
 
 // BetStatus represents the state of a bet
@@ -18,15 +18,15 @@ const (
 
 // Bet represents a player's wager in a round
 type Bet struct {
-	ID                    primitive.ObjectID `bson:"_id,omitempty" json:"id"`
-	UserID                primitive.ObjectID `bson:"user_id" json:"user_id"`
-	RoundID               string             `bson:"round_id" json:"round_id"`
-	AmountCents           int64              `bson:"amount_cents" json:"amount_cents"`
-	CashoutMultiplierX100 *int64             `bson:"cashout_multiplier_x100,omitempty" json:"cashout_multiplier_x100,omitempty"` // nullable
-	ProfitCents           int64              `bson:"profit_cents" json:"profit_cents"`
-	Status                BetStatus          `bson:"status" json:"status"`
-	PlacedAt              time.Time          `bson:"placed_at" json:"placed_at"`
-	CashedOutAt           *time.Time         `bson:"cashed_out_at,omitempty" json:"cashed_out_at,omitempty"` // nullable
+	ID                    uuid.UUID  `json:"id"`
+	UserID                uuid.UUID  `json:"user_id"`
+	RoundID               string     `json:"round_id"`
+	AmountCents           int64      `json:"amount_cents"`
+	CashoutMultiplierX100 *int64     `json:"cashout_multiplier_x100,omitempty"` // nullable
+	ProfitCents           int64      `json:"profit_cents"`
+	Status                BetStatus  `json:"status"`
+	PlacedAt              time.Time  `json:"placed_at"`
+	CashedOutAt           *time.Time `json:"cashed_out_at,omitempty"` // nullable
 }
 
 // BetResponse is the API representation of a bet
@@ -48,8 +48,8 @@ type BetResponse struct {
 // ToResponse converts Bet to BetResponse
 func (b *Bet) ToResponse() BetResponse {
 	resp := BetResponse{
-		ID:          b.ID.Hex(),
-		UserID:      b.UserID.Hex(),
+		ID:          b.ID.String(),
+		UserID:      b.UserID.String(),
 		RoundID:     b.RoundID,
 		Amount:      FormatCents(b.AmountCents),
 		AmountCents: b.AmountCents,

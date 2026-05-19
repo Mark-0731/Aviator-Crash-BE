@@ -4,7 +4,7 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
-	"go.mongodb.org/mongo-driver/bson/primitive"
+	"github.com/google/uuid"
 )
 
 // parsePagination parses and validates pagination parameters
@@ -22,9 +22,9 @@ func parsePagination(c *gin.Context, defaultLimit int64) (page, limit int64) {
 	return page, limit
 }
 
-// parseObjectID parses and validates MongoDB ObjectID from string
-func parseObjectID(idStr string) (primitive.ObjectID, error) {
-	return primitive.ObjectIDFromHex(idStr)
+// parseUUID parses and validates UUID from string
+func parseUUID(idStr string) (uuid.UUID, error) {
+	return uuid.Parse(idStr)
 }
 
 // paginationResponse creates a standard pagination response

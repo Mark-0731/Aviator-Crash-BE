@@ -3,7 +3,7 @@ package models
 import (
 	"time"
 
-	"go.mongodb.org/mongo-driver/bson/primitive"
+	"github.com/google/uuid"
 )
 
 // TransactionType represents the type of transaction
@@ -20,15 +20,15 @@ const (
 
 // Transaction represents a balance change event
 type Transaction struct {
-	ID                 primitive.ObjectID `bson:"_id,omitempty" json:"id"`
-	UserID             primitive.ObjectID `bson:"user_id" json:"user_id"`
-	Type               TransactionType    `bson:"type" json:"type"`
-	AmountCents        int64              `bson:"amount_cents" json:"amount_cents"`             // Always positive
-	RoundID            *string            `bson:"round_id,omitempty" json:"round_id,omitempty"` // Only for bet/win/refund
-	BalanceBeforeCents int64              `bson:"balance_before_cents" json:"balance_before_cents"`
-	BalanceAfterCents  int64              `bson:"balance_after_cents" json:"balance_after_cents"`
-	Reason             string             `bson:"reason,omitempty" json:"reason,omitempty"` // For admin adjustments
-	CreatedAt          time.Time          `bson:"created_at" json:"created_at"`
+	ID                 uuid.UUID       `json:"id"`
+	UserID             uuid.UUID       `json:"user_id"`
+	Type               TransactionType `json:"type"`
+	AmountCents        int64           `json:"amount_cents"`       // Always positive
+	RoundID            *string         `json:"round_id,omitempty"` // Only for bet/win/refund
+	BalanceBeforeCents int64           `json:"balance_before_cents"`
+	BalanceAfterCents  int64           `json:"balance_after_cents"`
+	Reason             string          `json:"reason,omitempty"` // For admin adjustments
+	CreatedAt          time.Time       `json:"created_at"`
 }
 
 // TransactionResponse is the API representation of a transaction
@@ -48,8 +48,8 @@ type TransactionResponse struct {
 // ToResponse converts Transaction to TransactionResponse
 func (t *Transaction) ToResponse() TransactionResponse {
 	return TransactionResponse{
-		ID:            t.ID.Hex(),
-		UserID:        t.UserID.Hex(),
+		ID:            t.ID.String(),
+		UserID:        t.UserID.String(),
 		Type:          t.Type,
 		Amount:        FormatCents(t.AmountCents),
 		AmountCents:   t.AmountCents,

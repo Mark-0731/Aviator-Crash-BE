@@ -9,7 +9,6 @@ import (
 	"aviator-backend/models"
 
 	"github.com/rs/zerolog/log"
-	"go.mongodb.org/mongo-driver/mongo"
 )
 
 // runRecovery handles server restart recovery with retry logic
@@ -89,8 +88,8 @@ func (e *Engine) refundPendingBets(ctx context.Context, bets []models.Bet) recov
 			if err := e.refundBetWithRetry(ctx, bet); err != nil {
 				log.Error().
 					Err(err).
-					Str("bet_id", bet.ID.Hex()).
-					Str("user_id", bet.UserID.Hex()).
+					Str("bet_id", bet.ID.String()).
+					Str("user_id", bet.UserID.String()).
 					Msg("refund_failed")
 				mu.Lock()
 				stats.failCount++
@@ -124,46 +123,45 @@ func (e *Engine) refundBetWithRetry(ctx context.Context, bet *models.Bet) error 
 
 // refundBet refunds a single bet using a transaction to prevent double-refund
 func (e *Engine) refundBet(ctx context.Context, bet *models.Bet) error {
-	// Get user's current balance first (outside transaction for read)
-	user, err := e.userRepo.FindByID(ctx, bet.UserID)
+	// Use a CockroachDB transaction to ensure all 3 operations succeed or all fail
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	// Create context with transaction
+	txCtx := context.WithValue(ctx, "tx", tx)
+
+	// Refund balance atomically — RETURNING gives us post-credit balance
+	updatedUser, err := e.userRepo.UpdateBalance(txCtx, bet.UserID, bet.AmountCents)
 	if err != nil {
 		return err
 	}
 
-	balanceBefore := user.BalanceCents
+	// Derive balance_before from post-credit value — no separate FindByID needed
+	balanceBefore := updatedUser.BalanceCents - bet.AmountCents
 
-	// Use a transaction to ensure all 3 operations succeed or all fail
-	session, err := database.Client.StartSession()
-	if err != nil {
+	// Update bet status to refunded
+	if err := e.betRepo.UpdateStatus(txCtx, bet.ID, models.BetStatusRefunded, 0); err != nil {
 		return err
 	}
-	defer session.EndSession(ctx)
 
-	_, err = session.WithTransaction(ctx, func(sessCtx mongo.SessionContext) (interface{}, error) {
-		// Refund balance atomically
-		_, err := e.userRepo.UpdateBalance(sessCtx, bet.UserID, bet.AmountCents)
-		if err != nil {
-			return nil, err
-		}
+	// Create transaction record
+	transaction := &models.Transaction{
+		UserID:             bet.UserID,
+		Type:               models.TransactionTypeRefund,
+		AmountCents:        bet.AmountCents,
+		RoundID:            &bet.RoundID,
+		BalanceBeforeCents: balanceBefore,
+		BalanceAfterCents:  updatedUser.BalanceCents,
+		Reason:             "server_restart_recovery",
+	}
 
-		// Update bet status to refunded
-		if err := e.betRepo.UpdateStatus(sessCtx, bet.ID, models.BetStatusRefunded, 0); err != nil {
-			return nil, err
-		}
+	if err := e.transactionRepo.Create(txCtx, transaction); err != nil {
+		return err
+	}
 
-		// Create transaction record
-		transaction := &models.Transaction{
-			UserID:             bet.UserID,
-			Type:               models.TransactionTypeRefund,
-			AmountCents:        bet.AmountCents,
-			RoundID:            &bet.RoundID,
-			BalanceBeforeCents: balanceBefore,
-			BalanceAfterCents:  balanceBefore + bet.AmountCents,
-			Reason:             "server_restart_recovery",
-		}
-
-		return nil, e.transactionRepo.Create(sessCtx, transaction)
-	})
-
-	return err
+	// Commit transaction
+	return tx.Commit(ctx)
 }

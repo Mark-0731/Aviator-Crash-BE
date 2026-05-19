@@ -9,8 +9,8 @@ import (
 	"aviator-backend/services"
 	"aviator-backend/utils"
 
+	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
-	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 // FULLY FUNCTIONAL - NO PLACEHOLDERS
@@ -77,7 +77,11 @@ func handlePlaceBet(client *Client, data map[string]any) {
 		return
 	}
 
-	userIDObj, _ := primitive.ObjectIDFromHex(client.userID)
+	userIDObj, err := uuid.Parse(client.userID)
+	if err != nil {
+		client.sendError("INTERNAL_ERROR", "Invalid user ID")
+		return
+	}
 
 	// Use GameService for transactional bet placement
 	// This atomically: checks duplicate, deducts balance, creates bet, records transaction
@@ -160,7 +164,11 @@ func handleCashOut(client *Client, data map[string]any) {
 		return
 	}
 
-	userIDObj, _ := primitive.ObjectIDFromHex(client.userID)
+	userIDObj, err := uuid.Parse(client.userID)
+	if err != nil {
+		client.sendError("INTERNAL_ERROR", "Invalid user ID")
+		return
+	}
 
 	// This call does ALL validation atomically:
 	// - Verifies bet ownership and status

@@ -7,7 +7,7 @@ import (
 	"aviator-backend/models"
 	"aviator-backend/repository"
 
-	"go.mongodb.org/mongo-driver/bson/primitive"
+	"github.com/google/uuid"
 )
 
 // FULLY FUNCTIONAL - NO PLACEHOLDERS
@@ -36,7 +36,7 @@ func (s *AdminService) GetUsers(ctx context.Context, page, limit int64, search s
 }
 
 // BanUser bans a user with a reason
-func (s *AdminService) BanUser(ctx context.Context, userID primitive.ObjectID, reason string) error {
+func (s *AdminService) BanUser(ctx context.Context, userID uuid.UUID, reason string) error {
 	if reason == "" {
 		return errors.New("ban reason is required")
 	}
@@ -44,27 +44,24 @@ func (s *AdminService) BanUser(ctx context.Context, userID primitive.ObjectID, r
 }
 
 // UnbanUser unbans a user
-func (s *AdminService) UnbanUser(ctx context.Context, userID primitive.ObjectID) error {
+func (s *AdminService) UnbanUser(ctx context.Context, userID uuid.UUID) error {
 	return s.userRepo.UnbanUser(ctx, userID)
 }
 
 // AdjustBalance adjusts a user's balance (admin operation)
-func (s *AdminService) AdjustBalance(ctx context.Context, userID primitive.ObjectID, amountCents int64, reason string) (*models.User, error) {
+func (s *AdminService) AdjustBalance(ctx context.Context, userID uuid.UUID, amountCents int64, reason string) (*models.User, error) {
 	if reason == "" {
 		return nil, errors.New("reason is required")
 	}
 
-	user, err := s.userRepo.FindByID(ctx, userID)
-	if err != nil {
-		return nil, err
-	}
-
-	balanceBefore := user.BalanceCents
-
+	// AdjustBalance uses UpdateBalance which returns the user post-update (RETURNING clause)
 	updatedUser, err := s.userRepo.AdjustBalance(ctx, userID, amountCents)
 	if err != nil {
 		return nil, err
 	}
+
+	// Derive balance_before from post-update value — no separate FindByID needed
+	balanceBefore := updatedUser.BalanceCents - amountCents
 
 	transaction := &models.Transaction{
 		UserID:             userID,

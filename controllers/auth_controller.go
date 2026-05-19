@@ -6,7 +6,7 @@ import (
 	"aviator-backend/utils"
 
 	"github.com/gin-gonic/gin"
-	"go.mongodb.org/mongo-driver/bson/primitive"
+	"github.com/google/uuid"
 )
 
 // FULLY FUNCTIONAL - NO PLACEHOLDERS
@@ -120,7 +120,7 @@ func (ctrl *AuthController) Logout(c *gin.Context) {
 // CreateWSTicket creates a WebSocket authentication ticket
 func (ctrl *AuthController) CreateWSTicket(c *gin.Context) {
 	userIDStr := middleware.GetUserID(c)
-	userID, err := primitive.ObjectIDFromHex(userIDStr)
+	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
 		utils.RespondWithError(c, utils.ErrBadRequest, "Invalid user ID")
 		return

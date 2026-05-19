@@ -14,11 +14,10 @@ type Config struct {
 	Env            string
 	AllowedOrigins []string
 
-	// MongoDB
-	MongoURI     string
-	MongoDB      string
-	MongoMaxPool uint64
-	MongoMinPool uint64
+	// Database (CockroachDB/PostgreSQL)
+	DatabaseURL string
+	DBMaxPool   uint64
+	DBMinPool   uint64
 
 	// JWT
 	JWTSecret              string
@@ -40,8 +39,8 @@ type Config struct {
 	ServerSeedSecret string
 
 	// NOWPayments (Crypto Deposits)
-	NOWPaymentsAPIKey     string
-	NOWPaymentsIPNSecret  string
+	NOWPaymentsAPIKey      string
+	NOWPaymentsIPNSecret   string
 	NOWPaymentsCallbackURL string
 	NOWPaymentsPayCurrency string // e.g. "usdttrc20"
 
@@ -66,11 +65,10 @@ func Load() error {
 		Env:            getEnv("ENV", "development"),
 		AllowedOrigins: strings.Split(getEnv("ALLOWED_ORIGINS", "http://localhost:3000"), ","),
 
-		// MongoDB
-		MongoURI:     getEnv("MONGO_URI", "mongodb://localhost:27017"),
-		MongoDB:      getEnv("MONGO_DB", "aviator"),
-		MongoMaxPool: getEnvAsUint64("MONGO_MAX_POOL", 50),
-		MongoMinPool: getEnvAsUint64("MONGO_MIN_POOL", 10),
+		// Database (CockroachDB/PostgreSQL)
+		DatabaseURL: getEnv("DATABASE_URL", "postgresql://root@localhost:26257/aviator?sslmode=disable"),
+		DBMaxPool:   getEnvAsUint64("DB_MAX_POOL", 50),
+		DBMinPool:   getEnvAsUint64("DB_MIN_POOL", 10),
 
 		// JWT
 		JWTSecret:              getEnv("JWT_SECRET", "change-this-to-a-secure-32-char-minimum-secret-in-production"),

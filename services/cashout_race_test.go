@@ -17,7 +17,6 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 // Test 1: Spam same cashout 20 times in parallel for one user
@@ -47,11 +46,12 @@ func TestConcurrentCashoutPrevention(t *testing.T) {
 
 	// Place bet
 	betAmount := int64(10000) // $100 bet
-	bet, _, err := gameService.PlaceBet(ctx, user.ID, round.RoundID, betAmount)
+	ctxWithPool := context.WithValue(ctx, "pool", database.Pool)
+	bet, _, err := gameService.PlaceBet(ctxWithPool, user.ID, round.RoundID, betAmount)
 	require.NoError(t, err)
 
 	// Add bet to game state
-	gameState.AddActiveBet(user.ID.Hex(), bet)
+	gameState.AddActiveBet(user.ID.String(), bet)
 
 	// Set round to running in both game state AND database
 	setRoundRunning(t, ctx, gameState, round, 1, betAmount)
@@ -64,13 +64,14 @@ func TestConcurrentCashoutPrevention(t *testing.T) {
 	var wg sync.WaitGroup
 	results := make(chan error, numAttempts)
 
-	t.Logf("Starting %d concurrent cashout attempts for user %s", numAttempts, user.ID.Hex())
+	t.Logf("Starting %d concurrent cashout attempts for user %s", numAttempts, user.ID.String())
 
 	for i := 0; i < numAttempts; i++ {
 		wg.Add(1)
 		go func(attempt int) {
 			defer wg.Done()
-			_, _, err := gameService.CashOut(ctx, bet.ID, user.ID)
+			ctxWithPool := context.WithValue(ctx, "pool", database.Pool)
+			_, _, err := gameService.CashOut(ctxWithPool, bet.ID, user.ID)
 			results <- err
 			if err == nil {
 				t.Logf("Attempt %d: SUCCESS", attempt)
@@ -152,10 +153,11 @@ func TestCrashBoundaryEnforcement(t *testing.T) {
 
 	// Place bet
 	betAmount := int64(10000)
-	bet, _, err := gameService.PlaceBet(ctx, user.ID, round.RoundID, betAmount)
+	ctxWithPool := context.WithValue(ctx, "pool", database.Pool)
+	bet, _, err := gameService.PlaceBet(ctxWithPool, user.ID, round.RoundID, betAmount)
 	require.NoError(t, err)
 
-	gameState.AddActiveBet(user.ID.Hex(), bet)
+	gameState.AddActiveBet(user.ID.String(), bet)
 	setRoundRunning(t, ctx, gameState, round, 1, betAmount)
 
 	// Test scenarios
@@ -192,10 +194,11 @@ func TestCrashBoundaryEnforcement(t *testing.T) {
 				round = createTestRound(t, ctx, gameState, crashPointX100)
 
 				// Place new bet
-				bet, _, err = gameService.PlaceBet(ctx, user.ID, round.RoundID, betAmount)
+				ctxWithPool := context.WithValue(ctx, "pool", database.Pool)
+				bet, _, err = gameService.PlaceBet(ctxWithPool, user.ID, round.RoundID, betAmount)
 				require.NoError(t, err)
 
-				gameState.AddActiveBet(user.ID.Hex(), bet)
+				gameState.AddActiveBet(user.ID.String(), bet)
 				setRoundRunning(t, ctx, gameState, round, 1, betAmount)
 			}
 
@@ -203,7 +206,8 @@ func TestCrashBoundaryEnforcement(t *testing.T) {
 			gameState.SetCurrentMultiplier(tc.multiplier)
 
 			// Attempt cashout
-			_, result, err := gameService.CashOut(ctx, bet.ID, user.ID)
+			ctxWithPool := context.WithValue(ctx, "pool", database.Pool)
+			_, result, err := gameService.CashOut(ctxWithPool, bet.ID, user.ID)
 
 			if tc.shouldSucceed {
 				assert.NoError(t, err, "Cashout should succeed below crash point")
@@ -252,10 +256,11 @@ func TestMidFlightCrash(t *testing.T) {
 
 	// Place bet
 	betAmount := int64(10000)
-	bet, _, err := gameService.PlaceBet(ctx, user.ID, round.RoundID, betAmount)
+	ctxWithPool := context.WithValue(ctx, "pool", database.Pool)
+	bet, _, err := gameService.PlaceBet(ctxWithPool, user.ID, round.RoundID, betAmount)
 	require.NoError(t, err)
 
-	gameState.AddActiveBet(user.ID.Hex(), bet)
+	gameState.AddActiveBet(user.ID.String(), bet)
 	setRoundRunning(t, ctx, gameState, round, 1, betAmount)
 	gameState.SetCurrentMultiplier(3.50)
 
@@ -264,7 +269,8 @@ func TestMidFlightCrash(t *testing.T) {
 	go func() {
 		// Simulate network delay
 		time.Sleep(10 * time.Millisecond)
-		_, _, err := gameService.CashOut(ctx, bet.ID, user.ID)
+		ctxWithPool := context.WithValue(ctx, "pool", database.Pool)
+		_, _, err := gameService.CashOut(ctxWithPool, bet.ID, user.ID)
 		cashoutDone <- err
 	}()
 
@@ -318,14 +324,15 @@ func TestDataConsistency(t *testing.T) {
 
 	// Place bet
 	betAmount := int64(10000) // $100
-	bet, userAfterBet, err := gameService.PlaceBet(ctx, user.ID, round.RoundID, betAmount)
+	ctxWithPool := context.WithValue(ctx, "pool", database.Pool)
+	bet, userAfterBet, err := gameService.PlaceBet(ctxWithPool, user.ID, round.RoundID, betAmount)
 	require.NoError(t, err)
 
 	balanceAfterBet := userAfterBet.BalanceCents
 	assert.Equal(t, initialBalance-betAmount, balanceAfterBet,
 		"Balance should be reduced by bet amount")
 
-	gameState.AddActiveBet(user.ID.Hex(), bet)
+	gameState.AddActiveBet(user.ID.String(), bet)
 	setRoundRunning(t, ctx, gameState, round, 1, betAmount)
 
 	// Set multiplier to 2.50x
@@ -333,7 +340,8 @@ func TestDataConsistency(t *testing.T) {
 	gameState.SetCurrentMultiplier(multiplier)
 
 	// Cashout
-	userAfterCashout, result, err := gameService.CashOut(ctx, bet.ID, user.ID)
+	ctxWithPool = context.WithValue(ctx, "pool", database.Pool)
+	userAfterCashout, result, err := gameService.CashOut(ctxWithPool, bet.ID, user.ID)
 	require.NoError(t, err, "Cashout should succeed")
 	require.NotNil(t, result, "Result should not be nil")
 
@@ -430,11 +438,12 @@ func setupTestDB(t *testing.T) {
 		t.Fatalf("Failed to load config: %v", err)
 	}
 
-	t.Logf("Connecting to MongoDB: %s", config.AppConfig.MongoURI)
+	t.Logf("Connecting to CockroachDB: %s", config.AppConfig.DatabaseURL)
 
-	// Connect to test database
-	if err := database.Connect(); err != nil {
-		t.Skipf("Skipping test: MongoDB not available - %v\n\nTo run these tests:\n1. Ensure MongoDB Atlas is accessible\n2. Check MONGO_URI in .env\n3. Verify network connectivity", err)
+	// Connect to test database (this also creates tables and indexes)
+	ctx := context.Background()
+	if err := database.ConnectCockroachDB(ctx); err != nil {
+		t.Skipf("Skipping test: CockroachDB not available - %v\n\nTo run these tests:\n1. Ensure CockroachDB is running\n2. Check DATABASE_URL in .env\n3. Verify network connectivity", err)
 	}
 }
 
@@ -442,12 +451,15 @@ func cleanupTestDB(t *testing.T) {
 	ctx := context.Background()
 
 	// Clean up test data
-	database.DB.Collection("users").Drop(ctx)
-	database.DB.Collection("bets").Drop(ctx)
-	database.DB.Collection("rounds").Drop(ctx)
-	database.DB.Collection("transactions").Drop(ctx)
+	database.Pool.Exec(ctx, "TRUNCATE TABLE transactions CASCADE")
+	database.Pool.Exec(ctx, "TRUNCATE TABLE bets CASCADE")
+	database.Pool.Exec(ctx, "TRUNCATE TABLE rounds CASCADE")
+	database.Pool.Exec(ctx, "TRUNCATE TABLE refresh_tokens CASCADE")
+	database.Pool.Exec(ctx, "TRUNCATE TABLE ws_tickets CASCADE")
+	database.Pool.Exec(ctx, "TRUNCATE TABLE payments CASCADE")
+	database.Pool.Exec(ctx, "TRUNCATE TABLE users CASCADE")
 
-	database.Disconnect()
+	database.DisconnectCockroachDB()
 }
 
 func createTestUser(t *testing.T, ctx context.Context, userRepo *repository.UserRepository, balanceCents int64) *models.User {
@@ -472,7 +484,7 @@ func createTestRound(t *testing.T, ctx context.Context, gameState game.GameState
 	nonce := time.Now().Unix()
 
 	round := &models.Round{
-		ID:             primitive.NewObjectID(),
+		ID:             uuid.New(),
 		RoundID:        roundID,
 		CrashPointX100: crashPointX100,
 		ServerSeed:     serverSeed,

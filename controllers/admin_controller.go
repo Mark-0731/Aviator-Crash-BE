@@ -35,7 +35,7 @@ func (ctrl *AdminController) GetUsers(c *gin.Context) {
 
 // BanUser bans a user
 func (ctrl *AdminController) BanUser(c *gin.Context) {
-	userID, err := parseObjectID(c.Param("id"))
+	userID, err := parseUUID(c.Param("id"))
 	if err != nil {
 		utils.RespondWithError(c, utils.ErrBadRequest, "Invalid user ID")
 		return
@@ -60,7 +60,7 @@ func (ctrl *AdminController) BanUser(c *gin.Context) {
 
 // UnbanUser unbans a user
 func (ctrl *AdminController) UnbanUser(c *gin.Context) {
-	userID, err := parseObjectID(c.Param("id"))
+	userID, err := parseUUID(c.Param("id"))
 	if err != nil {
 		utils.RespondWithError(c, utils.ErrBadRequest, "Invalid user ID")
 		return
@@ -76,7 +76,7 @@ func (ctrl *AdminController) UnbanUser(c *gin.Context) {
 
 // AdjustBalance adjusts a user's balance
 func (ctrl *AdminController) AdjustBalance(c *gin.Context) {
-	userID, err := parseObjectID(c.Param("id"))
+	userID, err := parseUUID(c.Param("id"))
 	if err != nil {
 		utils.RespondWithError(c, utils.ErrBadRequest, "Invalid user ID")
 		return

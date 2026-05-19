@@ -31,4 +31,7 @@ var (
 
 	// ErrDuplicateBet indicates user already has a bet in this round
 	ErrDuplicateBet = errors.New("duplicate bet in round")
+
+	// ErrDatabaseConnectionUnavailable indicates the database connection is not available
+	ErrDatabaseConnectionUnavailable = errors.New("database connection unavailable")
 )

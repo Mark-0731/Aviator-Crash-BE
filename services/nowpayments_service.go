@@ -17,9 +17,9 @@ import (
 	"aviator-backend/models"
 	"aviator-backend/repository"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
-	"go.mongodb.org/mongo-driver/bson/primitive"
-	"go.mongodb.org/mongo-driver/mongo"
 )
 
 const nowPaymentsSandboxBase = "https://api-sandbox.nowpayments.io/v1"
@@ -82,12 +82,12 @@ type IPNPayload struct {
 // ── Public Methods ──────────────────────────────────────────────────────────
 
 // CreateDeposit calls NOWPayments to create an invoice with hosted payment page.
-func (s *NOWPaymentsService) CreateDeposit(ctx context.Context, userID primitive.ObjectID, amountUSD float64, sandboxCase string) (*models.CryptoPayment, error) {
+func (s *NOWPaymentsService) CreateDeposit(ctx context.Context, userID uuid.UUID, amountUSD float64, sandboxCase string) (*models.CryptoPayment, error) {
 	if s.apiKey == "" {
 		return nil, fmt.Errorf("NOWPayments API key not configured — set NOWPAYMENTS_API_KEY in .env")
 	}
 
-	orderID := fmt.Sprintf("%s:%d", userID.Hex(), time.Now().UnixMilli())
+	orderID := fmt.Sprintf("%s:%d", userID.String(), time.Now().UnixMilli())
 
 	reqBody := createInvoiceRequest{
 		PriceAmount:      amountUSD,
@@ -111,7 +111,7 @@ func (s *NOWPaymentsService) CreateDeposit(ctx context.Context, userID primitive
 	}
 
 	payment := &models.CryptoPayment{
-		ID:             primitive.NewObjectID(),
+		ID:             uuid.New(),
 		UserID:         userID,
 		PaymentID:      nwResp.ID,
 		OrderID:        orderID, // Store order_id for webhook lookup
@@ -128,12 +128,13 @@ func (s *NOWPaymentsService) CreateDeposit(ctx context.Context, userID primitive
 }
 
 // GetPaymentStatus fetches payment from DB (for frontend polling).
-func (s *NOWPaymentsService) GetPaymentStatus(ctx context.Context, paymentID string, userID primitive.ObjectID) (*models.CryptoPayment, error) {
+func (s *NOWPaymentsService) GetPaymentStatus(ctx context.Context, paymentID string, userID uuid.UUID) (*models.CryptoPayment, error) {
 	payment, err := s.paymentRepo.FindByPaymentIDAndUser(ctx, paymentID, userID)
-	if err == mongo.ErrNoDocuments {
+	if err != nil {
+		// FindByPaymentIDAndUser wraps pgx.ErrNoRows as errors.New("payment not found")
 		return nil, fmt.Errorf("payment not found")
 	}
-	return payment, err
+	return payment, nil
 }
 
 // VerifyIPNSignature validates the x-nowpayments-sig header.
@@ -198,7 +199,7 @@ func (s *NOWPaymentsService) HandleWebhook(ctx context.Context, payload IPNPaylo
 
 	// Fetch payment by order_id (not payment_id, since webhook sends different ID)
 	payment, err := s.paymentRepo.FindByOrderID(ctx, orderID)
-	if err == mongo.ErrNoDocuments {
+	if err == pgx.ErrNoRows {
 		return nil // Unknown payment — ignore gracefully
 	}
 	if err != nil {
@@ -221,7 +222,7 @@ func (s *NOWPaymentsService) HandleWebhook(ctx context.Context, payload IPNPaylo
 
 		log.Info().
 			Str("order_id", orderID).
-			Str("user_id", payment.UserID.Hex()).
+			Str("user_id", payment.UserID.String()).
 			Int64("credited_cents", creditedCents).
 			Msg("crypto_deposit_credited")
 	}

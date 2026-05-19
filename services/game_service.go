@@ -2,6 +2,8 @@ package services
 
 import (
 	"context"
+	"strings"
+	"time"
 
 	"aviator-backend/database"
 	"aviator-backend/game"
@@ -9,8 +11,9 @@ import (
 	"aviator-backend/repository"
 	"aviator-backend/utils"
 
-	"go.mongodb.org/mongo-driver/bson/primitive"
-	"go.mongodb.org/mongo-driver/mongo"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // FULLY FUNCTIONAL - NO PLACEHOLDERS
@@ -38,62 +41,68 @@ func NewGameService() *GameService {
 }
 
 // PlaceBet places a bet for a user (used by WebSocket handler)
-func (s *GameService) PlaceBet(ctx context.Context, userID primitive.ObjectID, roundID string, amountCents int64) (*models.Bet, *models.User, error) {
-	session, err := database.Client.StartSession()
+func (s *GameService) PlaceBet(ctx context.Context, userID uuid.UUID, roundID string, amountCents int64) (*models.Bet, *models.User, error) {
+	// Get pool from context; fall back to global pool (WS handlers use plain context)
+	pool, _ := ctx.Value("pool").(*pgxpool.Pool)
+	if pool == nil {
+		pool = database.Pool
+	}
+	if pool == nil {
+		return nil, nil, ErrDatabaseConnectionUnavailable
+	}
+
+	// Start transaction
+	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
-	defer session.EndSession(ctx)
+	defer tx.Rollback(ctx)
 
-	var bet *models.Bet
-	var updatedUser *models.User
+	// Create transaction context
+	txCtx := context.WithValue(ctx, "tx", tx)
 
-	callback := func(sessCtx mongo.SessionContext) (interface{}, error) {
-		// Check for duplicate bet using repository
-		existingBet, err := s.betRepo.FindByUserAndRound(sessCtx, userID, roundID)
-		if err == nil && existingBet != nil {
-			return nil, ErrDuplicateBet
-		}
-
-		// Deduct balance atomically using repository
-		updatedUser, err = s.userRepo.DeductBalance(sessCtx, userID, amountCents)
-		if err != nil {
-			if err == mongo.ErrNoDocuments {
-				return nil, ErrInsufficientBalance
-			}
-			return nil, err
-		}
-
-		// Create bet using repository
-		bet = &models.Bet{
-			UserID:      userID,
-			RoundID:     roundID,
-			AmountCents: amountCents,
-			Status:      models.BetStatusPending,
-		}
-
-		if err := s.betRepo.Create(sessCtx, bet); err != nil {
-			return nil, err
-		}
-
-		// Create transaction using repository
-		transaction := &models.Transaction{
-			UserID:             userID,
-			Type:               models.TransactionTypeBet,
-			AmountCents:        amountCents,
-			RoundID:            &roundID,
-			BalanceBeforeCents: updatedUser.BalanceCents + amountCents,
-			BalanceAfterCents:  updatedUser.BalanceCents,
-		}
-		if err := s.transactionRepo.Create(sessCtx, transaction); err != nil {
-			return nil, err
-		}
-
-		return nil, nil
+	// Check for duplicate bet using repository
+	existingBet, err := s.betRepo.FindByUserAndRound(txCtx, userID, roundID)
+	if err == nil && existingBet != nil {
+		return nil, nil, ErrDuplicateBet
 	}
 
-	_, err = session.WithTransaction(ctx, callback)
+	// Deduct balance atomically using repository
+	updatedUser, err := s.userRepo.DeductBalance(txCtx, userID, amountCents)
 	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil, ErrInsufficientBalance
+		}
+		return nil, nil, err
+	}
+
+	// Create bet using repository
+	bet := &models.Bet{
+		UserID:      userID,
+		RoundID:     roundID,
+		AmountCents: amountCents,
+		Status:      models.BetStatusPending,
+	}
+
+	if err := s.betRepo.Create(txCtx, bet); err != nil {
+		return nil, nil, err
+	}
+
+	// Create transaction using repository
+	transaction := &models.Transaction{
+		UserID:             userID,
+		Type:               models.TransactionTypeBet,
+		AmountCents:        amountCents,
+		RoundID:            &roundID,
+		BalanceBeforeCents: updatedUser.BalanceCents + amountCents,
+		BalanceAfterCents:  updatedUser.BalanceCents,
+	}
+	if err := s.transactionRepo.Create(txCtx, transaction); err != nil {
+		return nil, nil, err
+	}
+
+	// Commit transaction
+	if err := tx.Commit(ctx); err != nil {
 		return nil, nil, err
 	}
 
@@ -113,60 +122,94 @@ func (s *GameService) PlaceBet(ctx context.Context, userID primitive.ObjectID, r
 // 7. Balance update, bet update, and transaction insert are atomic
 //
 // Returns domain-specific errors for proper error handling by caller
-func (s *GameService) CashOut(ctx context.Context, betID primitive.ObjectID, userID primitive.ObjectID) (*models.User, *CashOutResult, error) {
+func (s *GameService) CashOut(ctx context.Context, betID uuid.UUID, userID uuid.UUID) (*models.User, *CashOutResult, error) {
 	// Verify game state is available before starting transaction
 	if s.gameState == nil {
 		return nil, nil, ErrEngineStateUnavailable
 	}
 
-	session, err := database.Client.StartSession()
-	if err != nil {
-		return nil, nil, err
+	// Get pool from context; fall back to global pool (WS handlers use plain context)
+	pool, _ := ctx.Value("pool").(*pgxpool.Pool)
+	if pool == nil {
+		pool = database.Pool
 	}
-	defer session.EndSession(ctx)
+	if pool == nil {
+		return nil, nil, ErrDatabaseConnectionUnavailable
+	}
 
-	var updatedUser *models.User
-	var result *CashOutResult
+	// Retry logic for CockroachDB serialization errors (SQLSTATE 40001 / WriteTooOldError).
+	// CockroachDB's serializable isolation can abort a transaction at ANY statement,
+	// not just at commit. We must retry the entire transaction on any such error.
+	maxRetries := 5
+	var lastErr error
 
-	callback := func(sessCtx mongo.SessionContext) (interface{}, error) {
-		// STEP 1: Load bet and verify ownership + status atomically
-		bet, err := s.betRepo.FindByID(sessCtx, betID)
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			// Small backoff before retry to reduce contention
+			time.Sleep(time.Duration(attempt*10) * time.Millisecond)
+		}
+
+		// Start transaction
+		tx, err := pool.Begin(ctx)
 		if err != nil {
-			if err == mongo.ErrNoDocuments {
-				return nil, ErrBetNotFound
+			return nil, nil, err
+		}
+
+		// Create transaction context
+		txCtx := context.WithValue(ctx, "tx", tx)
+
+		// STEP 1: Load bet and verify ownership + status atomically
+		bet, err := s.betRepo.FindByID(txCtx, betID)
+		if err != nil {
+			tx.Rollback(ctx)
+			if err == pgx.ErrNoRows {
+				return nil, nil, ErrBetNotFound
 			}
-			return nil, err
+			if isSerializationError(err) {
+				lastErr = err
+				continue
+			}
+			return nil, nil, err
 		}
 
 		// Verify bet belongs to this user
 		if bet.UserID != userID {
-			return nil, ErrBetNotOwnedByUser
+			tx.Rollback(ctx)
+			return nil, nil, ErrBetNotOwnedByUser
 		}
 
 		// Verify bet is still pending (not already settled)
 		if bet.Status != models.BetStatusPending {
-			return nil, ErrBetAlreadySettled
+			tx.Rollback(ctx)
+			return nil, nil, ErrBetAlreadySettled
 		}
 
 		// STEP 2: Load round and verify it's still running
-		round, err := s.roundRepo.FindByRoundID(sessCtx, bet.RoundID)
+		round, err := s.roundRepo.FindByRoundID(txCtx, bet.RoundID)
 		if err != nil {
-			if err == mongo.ErrNoDocuments {
-				return nil, ErrRoundNotFound
+			tx.Rollback(ctx)
+			if err == pgx.ErrNoRows {
+				return nil, nil, ErrRoundNotFound
 			}
-			return nil, err
+			if isSerializationError(err) {
+				lastErr = err
+				continue
+			}
+			return nil, nil, err
 		}
 
 		// Verify round is in running phase
 		if round.Status != models.RoundStatusRunning {
-			return nil, ErrRoundNotRunning
+			tx.Rollback(ctx)
+			return nil, nil, ErrRoundNotRunning
 		}
 
 		// STEP 3: Read authoritative current multiplier from game state
 		// This is the single source of truth - never trust client-provided multiplier
 		currentMultiplierFloat, err := s.gameState.GetCurrentMultiplier()
 		if err != nil || currentMultiplierFloat < 1.0 {
-			return nil, ErrEngineStateUnavailable
+			tx.Rollback(ctx)
+			return nil, nil, ErrEngineStateUnavailable
 		}
 
 		currentMultiplierX100 := utils.MultiplierToX100(currentMultiplierFloat)
@@ -174,7 +217,8 @@ func (s *GameService) CashOut(ctx context.Context, betID primitive.ObjectID, use
 		// STEP 4: Enforce crash boundary strictly
 		// If current multiplier >= crash point, cashout is too late
 		if currentMultiplierX100 >= round.CrashPointX100 {
-			return nil, ErrCashoutTooLate
+			tx.Rollback(ctx)
+			return nil, nil, ErrCashoutTooLate
 		}
 
 		// STEP 5: Calculate payout server-side (never trust client)
@@ -189,20 +233,29 @@ func (s *GameService) CashOut(ctx context.Context, betID primitive.ObjectID, use
 		profitCents := utils.CalculateProfit(bet.AmountCents, payoutCents)
 
 		// STEP 7: Update bet status atomically with conditional update
-		// MongoDB will only update if status is still pending
 		// This provides DB-level protection against double cashout
-		if err := s.betRepo.UpdateCashout(sessCtx, betID, currentMultiplierX100, profitCents); err != nil {
-			if err == mongo.ErrNoDocuments {
-				// Bet was already settled by another request
-				return nil, ErrBetAlreadySettled
+		if err := s.betRepo.UpdateCashout(txCtx, betID, currentMultiplierX100, profitCents); err != nil {
+			tx.Rollback(ctx)
+			if err == pgx.ErrNoRows {
+				// Bet was already settled by another concurrent request
+				return nil, nil, ErrBetAlreadySettled
 			}
-			return nil, err
+			if isSerializationError(err) {
+				lastErr = err
+				continue
+			}
+			return nil, nil, err
 		}
 
 		// STEP 8: Credit user balance atomically
-		updatedUser, err = s.userRepo.UpdateBalance(sessCtx, userID, payoutCents)
+		updatedUser, err := s.userRepo.UpdateBalance(txCtx, userID, payoutCents)
 		if err != nil {
-			return nil, err
+			tx.Rollback(ctx)
+			if isSerializationError(err) {
+				lastErr = err
+				continue
+			}
+			return nil, nil, err
 		}
 
 		// STEP 9: Record transaction atomically
@@ -214,12 +267,26 @@ func (s *GameService) CashOut(ctx context.Context, betID primitive.ObjectID, use
 			BalanceBeforeCents: updatedUser.BalanceCents - payoutCents,
 			BalanceAfterCents:  updatedUser.BalanceCents,
 		}
-		if err := s.transactionRepo.Create(sessCtx, transaction); err != nil {
-			return nil, err
+		if err := s.transactionRepo.Create(txCtx, transaction); err != nil {
+			tx.Rollback(ctx)
+			if isSerializationError(err) {
+				lastErr = err
+				continue
+			}
+			return nil, nil, err
+		}
+
+		// Commit transaction
+		if err := tx.Commit(ctx); err != nil {
+			if isSerializationError(err) {
+				lastErr = err
+				continue // Retry
+			}
+			return nil, nil, err
 		}
 
 		// Build result to return to caller
-		result = &CashOutResult{
+		result := &CashOutResult{
 			MultiplierX100: currentMultiplierX100,
 			Multiplier:     currentMultiplierFloat,
 			PayoutCents:    payoutCents,
@@ -228,15 +295,32 @@ func (s *GameService) CashOut(ctx context.Context, betID primitive.ObjectID, use
 			RoundID:        bet.RoundID,
 		}
 
-		return nil, nil
+		return updatedUser, result, nil
 	}
 
-	_, err = session.WithTransaction(ctx, callback)
-	if err != nil {
-		return nil, nil, err
+	// All retries exhausted — if the bet is now settled, report it correctly
+	// rather than leaking an opaque serialization error to the caller
+	if lastErr != nil && isSerializationError(lastErr) {
+		return nil, nil, ErrBetAlreadySettled
+	}
+	if lastErr != nil {
+		return nil, nil, lastErr
 	}
 
-	return updatedUser, result, nil
+	return nil, nil, ErrBetAlreadySettled
+}
+
+
+// isSerializationError checks if an error is a CockroachDB serialization error
+func isSerializationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errMsg := err.Error()
+	return strings.Contains(errMsg, "restart transaction") ||
+		strings.Contains(errMsg, "WriteTooOldError") ||
+		strings.Contains(errMsg, "RETRY_WRITE_TOO_OLD") ||
+		strings.Contains(errMsg, "SQLSTATE 40001")
 }
 
 // CashOutResult contains the result of a successful cashout
@@ -256,6 +340,11 @@ func (s *GameService) GetRoundHistory(ctx context.Context, page, limit int64) ([
 		return nil, 0, err
 	}
 	return convertToRoundResponses(rounds), total, nil
+}
+
+// GetUserProfile gets a user's public profile by ID
+func (s *GameService) GetUserProfile(ctx context.Context, userID uuid.UUID) (*models.User, error) {
+	return s.userRepo.FindByID(ctx, userID)
 }
 
 // VerifyRound verifies provably fair calculation
@@ -295,7 +384,7 @@ func (s *GameService) GetCurrentGameState(gameState game.GameStateStore) (map[st
 }
 
 // GetUserBets gets user's bet history with pagination
-func (s *GameService) GetUserBets(ctx context.Context, userID primitive.ObjectID, page, limit int64) ([]models.BetResponse, int64, error) {
+func (s *GameService) GetUserBets(ctx context.Context, userID uuid.UUID, page, limit int64) ([]models.BetResponse, int64, error) {
 	bets, total, err := s.betRepo.FindByUser(ctx, userID, page, limit)
 	if err != nil {
 		return nil, 0, err
@@ -304,10 +393,15 @@ func (s *GameService) GetUserBets(ctx context.Context, userID primitive.ObjectID
 }
 
 // GetUserTransactions gets user's transaction history with pagination
-func (s *GameService) GetUserTransactions(ctx context.Context, userID primitive.ObjectID, page, limit int64) ([]models.TransactionResponse, int64, error) {
+func (s *GameService) GetUserTransactions(ctx context.Context, userID uuid.UUID, page, limit int64) ([]models.TransactionResponse, int64, error) {
 	transactions, total, err := s.transactionRepo.FindByUser(ctx, userID, page, limit)
 	if err != nil {
 		return nil, 0, err
 	}
 	return convertToTransactionResponses(transactions), total, nil
+}
+
+// UpdateClientSeed updates the player's client seed for provably fair generation
+func (s *GameService) UpdateClientSeed(ctx context.Context, userID uuid.UUID, clientSeed string) error {
+	return s.userRepo.UpdateClientSeed(ctx, userID, clientSeed)
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"aviator-backend/config"
@@ -12,7 +13,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
-	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 // waitingPhase handles the waiting state
@@ -230,7 +230,7 @@ func (e *Engine) generateNewRound() *models.Round {
 	crashPoint := GenerateCrashPoint(serverSeed, clientSeed, nonce)
 
 	return &models.Round{
-		ID:             primitive.NewObjectID(),
+		ID:             uuid.New(),
 		RoundID:        roundID,
 		CrashPointX100: utils.MultiplierToX100(crashPoint),
 		ServerSeed:     serverSeed,
@@ -251,26 +251,20 @@ func (e *Engine) buildCombinedClientSeed(nonce int64) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	// Convert string IDs to ObjectIDs
-	objectIDs := make([]interface{}, 0, len(userIDs))
+	// Convert string IDs to UUIDs
+	uuidSlice := make([]uuid.UUID, 0, len(userIDs))
 	for _, id := range userIDs {
-		if oid, err := primitive.ObjectIDFromHex(id); err == nil {
-			objectIDs = append(objectIDs, oid)
+		if uid, err := uuid.Parse(id); err == nil {
+			uuidSlice = append(uuidSlice, uid)
 		}
 	}
 
 	// Use a default if no players are connected
-	if len(objectIDs) == 0 {
+	if len(uuidSlice) == 0 {
 		return fmt.Sprintf("server-generated:%d", nonce)
 	}
 
-	// Convert back to primitive.ObjectID slice for repo
-	oidSlice := make([]primitive.ObjectID, 0, len(objectIDs))
-	for _, id := range objectIDs {
-		oidSlice = append(oidSlice, id.(primitive.ObjectID))
-	}
-
-	seeds, err := e.userRepo.GetClientSeedsByIDs(ctx, oidSlice)
+	seeds, err := e.userRepo.GetClientSeedsByIDs(ctx, uuidSlice)
 	if err != nil || len(seeds) == 0 {
 		return fmt.Sprintf("server-generated:%d", nonce)
 	}
@@ -280,16 +274,16 @@ func (e *Engine) buildCombinedClientSeed(nonce int64) string {
 	return utils.SHA256Hash(combined)
 }
 
-// joinSeeds joins seeds with a separator
+// joinSeeds joins seeds with a colon separator using a Builder to avoid O(n²) allocs
 func joinSeeds(seeds []string) string {
-	result := ""
+	var sb strings.Builder
 	for i, s := range seeds {
 		if i > 0 {
-			result += ":"
+			sb.WriteByte(':')
 		}
-		result += s
+		sb.WriteString(s)
 	}
-	return result
+	return sb.String()
 }
 
 // Helper functions

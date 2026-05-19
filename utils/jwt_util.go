@@ -7,7 +7,7 @@ import (
 	"aviator-backend/config"
 
 	"github.com/golang-jwt/jwt/v5"
-	"go.mongodb.org/mongo-driver/bson/primitive"
+	"github.com/google/uuid"
 )
 
 // Claims represents JWT claims
@@ -19,11 +19,11 @@ type Claims struct {
 }
 
 // GenerateAccessToken generates a JWT access token
-func GenerateAccessToken(userID primitive.ObjectID, username string, isAdmin bool) (string, error) {
+func GenerateAccessToken(userID uuid.UUID, username string, isAdmin bool) (string, error) {
 	expirationTime := time.Now().Add(time.Duration(config.AppConfig.JWTAccessExpiryMinutes) * time.Minute)
 
 	claims := &Claims{
-		UserID:   userID.Hex(),
+		UserID:   userID.String(),
 		Username: username,
 		IsAdmin:  isAdmin,
 		RegisteredClaims: jwt.RegisteredClaims{
@@ -37,11 +37,11 @@ func GenerateAccessToken(userID primitive.ObjectID, username string, isAdmin boo
 }
 
 // GenerateRefreshToken generates a JWT refresh token
-func GenerateRefreshToken(userID primitive.ObjectID) (string, error) {
+func GenerateRefreshToken(userID uuid.UUID) (string, error) {
 	expirationTime := time.Now().Add(time.Duration(config.AppConfig.JWTRefreshExpiryDays) * 24 * time.Hour)
 
 	claims := &Claims{
-		UserID: userID.Hex(),
+		UserID: userID.String(),
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(expirationTime),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
@@ -76,15 +76,15 @@ func ValidateToken(tokenString string) (*Claims, error) {
 }
 
 // ExtractUserIDFromToken extracts user ID from token string
-func ExtractUserIDFromToken(tokenString string) (primitive.ObjectID, error) {
+func ExtractUserIDFromToken(tokenString string) (uuid.UUID, error) {
 	claims, err := ValidateToken(tokenString)
 	if err != nil {
-		return primitive.NilObjectID, err
+		return uuid.Nil, err
 	}
 
-	userID, err := primitive.ObjectIDFromHex(claims.UserID)
+	userID, err := uuid.Parse(claims.UserID)
 	if err != nil {
-		return primitive.NilObjectID, errors.New("invalid user ID in token")
+		return uuid.Nil, errors.New("invalid user ID in token")
 	}
 
 	return userID, nil

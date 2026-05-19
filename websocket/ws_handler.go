@@ -63,7 +63,7 @@ func (h *Handler) HandleConnection(c *gin.Context) {
 	}
 
 	// Create client
-	client := NewClient(h.hub, conn, user.ID.Hex(), user.Username, user.IsAdmin)
+	client := NewClient(h.hub, conn, user.ID.String(), user.Username, user.IsAdmin)
 
 	// Register client
 	h.hub.Register <- client

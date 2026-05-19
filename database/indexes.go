@@ -4,85 +4,53 @@ import (
 	"context"
 
 	"github.com/rs/zerolog/log"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
 )
-
-// indexDefinition represents a collection and its indexes
-type indexDefinition struct {
-	collection string
-	indexes    []mongo.IndexModel
-}
-
-// getAllIndexes returns all index definitions for the database
-func getAllIndexes() []indexDefinition {
-	return []indexDefinition{
-		{
-			collection: "users",
-			indexes: []mongo.IndexModel{
-				{Keys: bson.D{{Key: "email", Value: 1}}, Options: options.Index().SetUnique(true)},
-				{Keys: bson.D{{Key: "username", Value: 1}}, Options: options.Index().SetUnique(true)},
-				{Keys: bson.D{{Key: "registration_ip", Value: 1}}},
-			},
-		},
-		{
-			collection: "bets",
-			indexes: []mongo.IndexModel{
-				{Keys: bson.D{{Key: "user_id", Value: 1}}},
-				{Keys: bson.D{{Key: "round_id", Value: 1}}},
-				{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "round_id", Value: 1}}, Options: options.Index().SetUnique(true)},
-				{Keys: bson.D{{Key: "status", Value: 1}}},
-			},
-		},
-		{
-			collection: "rounds",
-			indexes: []mongo.IndexModel{
-				{Keys: bson.D{{Key: "round_id", Value: 1}}, Options: options.Index().SetUnique(true)},
-				{Keys: bson.D{{Key: "status", Value: 1}}},
-				{Keys: bson.D{{Key: "started_at", Value: -1}}},
-			},
-		},
-		{
-			collection: "transactions",
-			indexes: []mongo.IndexModel{
-				{Keys: bson.D{{Key: "user_id", Value: 1}}},
-				{Keys: bson.D{{Key: "created_at", Value: -1}}},
-			},
-		},
-		{
-			collection: "ws_tickets",
-			indexes: []mongo.IndexModel{
-				{Keys: bson.D{{Key: "ticket", Value: 1}}, Options: options.Index().SetUnique(true)},
-				{Keys: bson.D{{Key: "expires_at", Value: 1}}, Options: options.Index().SetExpireAfterSeconds(0)},
-			},
-		},
-		{
-			collection: "refresh_tokens",
-			indexes: []mongo.IndexModel{
-				{Keys: bson.D{{Key: "token", Value: 1}}, Options: options.Index().SetUnique(true)},
-				{Keys: bson.D{{Key: "user_id", Value: 1}}},
-				{Keys: bson.D{{Key: "expires_at", Value: 1}}, Options: options.Index().SetExpireAfterSeconds(0)},
-			},
-		},
-		{
-			collection: "crypto_payments",
-			indexes: []mongo.IndexModel{
-				{Keys: bson.D{{Key: "payment_id", Value: 1}}, Options: options.Index().SetUnique(true)},
-				{Keys: bson.D{{Key: "order_id", Value: 1}}}, // Non-unique to allow null values in old records
-				{Keys: bson.D{{Key: "user_id", Value: 1}}},
-				{Keys: bson.D{{Key: "status", Value: 1}}},
-			},
-		},
-	}
-}
 
 // createIndexes creates all required indexes for optimal performance
 func createIndexes(ctx context.Context) error {
-	for _, def := range getAllIndexes() {
-		collection := DB.Collection(def.collection)
-		if _, err := collection.Indexes().CreateMany(ctx, def.indexes); err != nil {
-			log.Error().Err(err).Str("collection", def.collection).Msg("failed_to_create_indexes")
+	indexes := []string{
+		// Users indexes
+		`CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)`,
+		`CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)`,
+		`CREATE INDEX IF NOT EXISTS idx_users_registration_ip ON users(registration_ip)`,
+
+		// Rounds indexes
+		`CREATE INDEX IF NOT EXISTS idx_rounds_round_id ON rounds(round_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_rounds_status ON rounds(status)`,
+		`CREATE INDEX IF NOT EXISTS idx_rounds_started_at ON rounds(started_at DESC)`,
+
+		// Bets indexes
+		`CREATE INDEX IF NOT EXISTS idx_bets_user_id ON bets(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_bets_round_id ON bets(round_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_bets_status ON bets(status)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_bets_user_round ON bets(user_id, round_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_bets_placed_at ON bets(placed_at DESC)`,
+
+		// Transactions indexes
+		`CREATE INDEX IF NOT EXISTS idx_transactions_user_id ON transactions(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_transactions_type ON transactions(type)`,
+		`CREATE INDEX IF NOT EXISTS idx_transactions_created_at ON transactions(created_at DESC)`,
+
+		// Refresh tokens indexes
+		`CREATE INDEX IF NOT EXISTS idx_refresh_tokens_token ON refresh_tokens(token)`,
+		`CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user_id ON refresh_tokens(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_refresh_tokens_expires_at ON refresh_tokens(expires_at)`,
+
+		// WebSocket tickets indexes
+		`CREATE INDEX IF NOT EXISTS idx_ws_tickets_ticket ON ws_tickets(ticket)`,
+		`CREATE INDEX IF NOT EXISTS idx_ws_tickets_user_id ON ws_tickets(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_ws_tickets_expires_at ON ws_tickets(expires_at)`,
+
+		// Payments indexes
+		`CREATE INDEX IF NOT EXISTS idx_payments_user_id ON payments(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_payments_payment_id ON payments(payment_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_payments_order_id ON payments(order_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(payment_status)`,
+	}
+
+	for _, query := range indexes {
+		if _, err := Pool.Exec(ctx, query); err != nil {
+			log.Error().Err(err).Str("query", query[:50]+"...").Msg("failed_to_create_index")
 			return err
 		}
 	}
